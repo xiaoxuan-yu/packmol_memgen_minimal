@@ -65,17 +65,20 @@ This project depends on and/or interoperates with the following open-source
 software. Please refer to each project for license terms.
 
 Core dependencies (installed via PyPI):
+
 - NumPy, SciPy, pandas, tqdm, matplotlib
 - PDB2PQR
 - docopt
 
 Optional external tools (installed separately; invoked via subprocess):
+
 - PACKMOL (MIT License)
 - MemPrO (GNU GPL v3)
 
 Additional utilities used by this workflow:
+
 - PDBREMIX (MIT License)
-- charmmlipid2amber 
+- charmmlipid2amber
 
 
 
