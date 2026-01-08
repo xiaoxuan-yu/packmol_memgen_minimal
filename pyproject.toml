@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "packmol-memgen-minimal"
-description = "A PACKMOL wrapper for packing proteins into membranes."
+description = "A fork of packmol_memgen from AmberTools, a PACKMOL wrapper for packing proteins into membranes, aimed to be minimal, mordernized and self-contained."
 readme = "README.rst"
 requires-python = ">=3.11"
 license = { text = "GPL-2.0-only" }
@@ -37,7 +37,7 @@ mempro = ["mempro"]
 full = ["packmol", "mempro"]
 
 [project.urls]
-Homepage = "http://cpclab.uni-duesseldorf.de/"
+Homepage = "https://github.com/xiaoxuan-yu/packmol_memgen_minimal/"
 
 [project.scripts]
 packmol-memgen = "packmol_memgen.main:cli"
