@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "packmol-memgen-minimal"
+description = "A PACKMOL wrapper for packing proteins into membranes."
+readme = "README.rst"
+requires-python = ">=3.11"
+license = { text = "GPL-2.0-only" }
+authors = [
+  { name = "Xiaoxuan Yu", email = "xiaoxuan_yu@pku.edu.cn" },
+]
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+  "Development Status :: 3 - Alpha",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "tqdm",
+  "pdb2pqr>=3.7.1",
+  "matplotlib"
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+packmol = ["packmol"]
+mempro = ["mempro"]
+full = ["packmol", "mempro"]
+
+[project.urls]
+Homepage = "http://cpclab.uni-duesseldorf.de/"
+
+[project.scripts]
+packmol-memgen = "packmol_memgen.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["packmol_memgen"]
+include = [
+  "packmol_memgen/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "packmol_memgen/**",
+  "README.rst",
+  "LICENSE",
+  "packmol-memgen",
+]
+
+[tool.hatch.version]
+path = "packmol_memgen/__version__.py"
+pattern = "^__version__ = \"(?P<version>[^\"]+)\""

@@ -1,0 +1,2 @@
+include README.rst LICENSE packmol-memgen
+recursive-include packmol_memgen *
