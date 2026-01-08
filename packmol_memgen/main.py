@@ -28,17 +28,37 @@ except:
     except:
         os.environ['COLUMNS'] = "80"
 
-def _prepend_sys_executable_dir_to_path():
+def _prepend_uv_tool_dirs_to_path():
     # Ensure tools installed by `uv tool install` are discoverable via PATH.
-    exe_dir = str(Path(sys.executable).resolve().parent)
-    if not exe_dir:
-        return
+    tool_names = ("packmol_memgen_minimal", "packmol-memgen-minimal")
+    candidates = []
+
+    uv_tool_bin_dir = os.environ.get("UV_TOOL_BIN_DIR", "").strip()
+    if uv_tool_bin_dir:
+        candidates.append(Path(uv_tool_bin_dir))
+
+    uv_tool_dir = os.environ.get("UV_TOOL_DIR", "").strip()
+    if uv_tool_dir:
+        uv_tool_root = Path(uv_tool_dir)
+        candidates.append(uv_tool_root / "bin")
+        for name in tool_names:
+            candidates.append(uv_tool_root / "tools" / name / "bin")
+
+    default_root = Path.home() / ".local" / "share" / "uv"
+    candidates.append(default_root / "bin")
+    for name in tool_names:
+        candidates.append(default_root / "tools" / name / "bin")
+
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
-    if exe_dir not in parts:
-        os.environ["PATH"] = os.pathsep.join([exe_dir] + parts)
+    for path in candidates:
+        if path and path.exists():
+            path_str = str(path)
+            if path_str not in parts:
+                parts.insert(0, path_str)
+    os.environ["PATH"] = os.pathsep.join(parts)
 
-_prepend_sys_executable_dir_to_path()
+_prepend_uv_tool_dirs_to_path()
 
 
 explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. The input pdb file will be protonated and oriented by default using pdb2pqr and MemPrO; the user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
@@ -492,7 +512,11 @@ class PACKMOLMemgen(object):
     
         mempro_cmd = self.mempro
         if mempro_cmd is None:
-            mempro_cmd = shutil.which("mempro")
+            mempro_cmd = (
+                shutil.which("mempro")
+                or shutil.which("MemPrO")
+                or shutil.which("MemPro")
+            )
         if mempro_cmd:
             self.mempro = mempro_cmd
         else:
