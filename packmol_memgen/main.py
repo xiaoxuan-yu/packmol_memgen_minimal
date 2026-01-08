@@ -126,6 +126,7 @@ parser.add_argument("--charmm",     action="store_true",          help=argparse.
 parser.add_argument("--translate", nargs=3, type=float, default=[0,0,0], help=argparse.SUPPRESS if short_help else "pass a vector as  x y z  to translate the oriented pdb. Ex. ' 0 0 4 '")
 parser.add_argument("--sirah", action="store_true",               help=argparse.SUPPRESS if short_help else "use SIRAH lipids, and corase-grain protein input. Will adapt tolerance accordingly. Only small subset of lipids available!")
 parser.add_argument("--verbose",    action="store_true",          help=argparse.SUPPRESS if short_help else "verbose mode")
+parser.add_argument("--xponge",     action="store_true",          help=argparse.SUPPRESS if short_help else "postprocess ion names to Xponge-compatible identifiers")
 
 parser.add_argument("--pdb2pqr",      action="store_true",        help=argparse.SUPPRESS if short_help else "uses pdb2pqr to protonate the protein structure")
 parser.add_argument("--pdb2pqr_pH",   type=float, default=7.0,    help=argparse.SUPPRESS if short_help else "pH to be used by pdb2pqr to protonate the structure")
@@ -165,6 +166,8 @@ packmolopt.add_argument("--maxit",       type=int,default=20,         help=argpa
 packmolopt.add_argument("--movefrac",    type=float,default=0.05,     help=argparse.SUPPRESS if short_help else "fraction of molecules to be moved. 0.05 by default.")
 packmolopt.add_argument("--packlog",type=str,default="packmol",       help=argparse.SUPPRESS if short_help else "prefix for generated PACKMOL input and log files")
 packmolopt.add_argument("--packmol",type=str,                         help=argparse.SUPPRESS)
+packmolopt.add_argument("--hexadecimal_indices", action="store_true", default=True, help=argparse.SUPPRESS if short_help else "use PACKMOL hexadecimal_indices output; will be converted to hybrid-36 in final PDB")
+packmolopt.add_argument("--no-hexadecimal-indices", action="store_false", dest="hexadecimal_indices", help=argparse.SUPPRESS if short_help else "disable PACKMOL hexadecimal_indices output")
 
 saltopt = parser.add_argument_group('Salts and charges')
 saltopt.add_argument("--salt",        action="store_true",         help=argparse.SUPPRESS if short_help else "adds salt at a concentration of 0.15M by default. Salt is always added considering estimated charges for the system.")
@@ -752,6 +755,8 @@ class PACKMOLMemgen(object):
             content_header += "short_tol_scale 5\n"
         if not self.charmm:
              content_header += "add_amber_ter\n"
+        if self.hexadecimal_indices:
+            content_header += "hexadecimal_indices\n"
         content_header += "amber_ter_preserve\n"
         if self.movebadrandom:
             content_header += "movebadrandom\n"
@@ -1939,14 +1944,19 @@ class PACKMOLMemgen(object):
             if self.sterols_PI_used:
                 logger.info("Sterols and/or PI residues were packed. Potential piercing lipid tails will be searched")
                 try:
-                    to_remove = find_piercing_lipids(self.outfile, verbose=True)
+                    to_remove = find_piercing_lipids(self.outfile, verbose=True, hexadecimal_indices=self.hexadecimal_indices)
                     try:                
                         if len(to_remove) > 0:
-                           self.outfile = remove_piercing_lipids(self.outfile, to_remove, outfile=self.outfile.replace(".pdb","_noclash.pdb"), verbose=True)
+                           self.outfile = remove_piercing_lipids(self.outfile, to_remove, outfile=self.outfile.replace(".pdb","_noclash.pdb"), verbose=True, hexadecimal_indices=self.hexadecimal_indices)
                     except:
                         logger.warning("Lipid piercing removal failed. Check your structure manually in case of clashing lipid tails!")
                 except:
                     logger.warning("Lipid piercing finder failed. Check your structure manually in case of clashing lipid tails!")
+
+        if self.hexadecimal_indices:
+            convert_pdb_indices_to_hybrid36(self.outfile, atom_base=16, res_base=16)
+        if self.xponge:
+            apply_xponge_ion_names(self.outfile)
     
     def cleanup(self):
         if self.delete:

@@ -8,6 +8,7 @@ import contextlib
 import warnings
 from scipy import integrate
 from .pdbremix import data
+import tempfile
 
 logger = logging.getLogger("pmmg_log")
 
@@ -43,6 +44,182 @@ sterol_ring_probes = [["C1","C2","C3","C4","C5","C10"],["C5","C6","C7","C8","C9"
 PI_ring_probe = ["C31","C32","C33","C34","C35","C36"]
 
 #masses   = {"C": 12, "S": 32, "O": 16, "H": 1, "N": 14}
+
+_HY36_DIGITS_UPPER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_HY36_DIGITS_LOWER = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+_XSPONGE_ION_RENAMES = {
+    "LI": "LI",
+    "Na+": "NA",
+    "K+": "K",
+    "RB": "RB",
+    "CS": "CS",
+    "F": "F",
+    "Cl-": "CL",
+    "BR": "BR",
+    "IOD": "I",
+    "I-": "I",
+    "AG": "AG",
+    "CU1": "CU",
+    "TL": "TL",
+    "Be": "BE2",
+    "CU": "CU2",
+    "NI": "NI2",
+    "PT": "PT2",
+    "ZN": "ZN2",
+    "CO": "CO2",
+    "PD": "PD2",
+    "Ag": "AG2",
+    "Cr": "CR2",
+    "FE2": "FE2",
+    "MG": "MG2",
+    "V2+": "V2",
+    "MN": "MN2",
+    "HG": "HG2",
+    "CD": "CD2",
+    "YB2": "YB2",
+    "CA": "CA2",
+    "Sn": "SN2",
+    "PB": "PB2",
+    "EU": "EU2",
+    "SR": "SR2",
+    "Sm": "SM2",
+    "BA": "BA2",
+    "Ra": "RA2",
+    "AL": "AL3",
+    "FE": "FE3",
+    "CR": "CR3",
+    "IN": "IN3",
+    "Tl": "TL3",
+    "Y": "Y3",
+    "LA": "LA3",
+    "CE": "CE3",
+    "PR": "PR3",
+    "Nd": "ND3",
+    "SM": "SM3",
+    "EU3": "EU3",
+    "GD3": "GD3",
+    "TB": "TB3",
+    "Dy": "DY3",
+    "Er": "ER3",
+    "Tm": "TM3",
+    "LU": "LU3",
+    "Hf": "HF4",
+    "Zr": "ZR4",
+    "Ce": "CE4",
+    "U4+": "U4",
+    "Pu": "PU4",
+    "Th": "TH4",
+}
+
+def _base36_encode(value, width, digits):
+    out = []
+    for _ in range(width):
+        value, rem = divmod(value, 36)
+        out.append(digits[rem])
+    if value:
+        raise ValueError("Value exceeds width for base-36 encoding")
+    return "".join(reversed(out))
+
+def hy36encode(width, value):
+    """Encode integer using PDB hybrid-36 for fixed-width fields."""
+    if value < 0:
+        raise ValueError("Hybrid-36 encoding does not support negative values")
+    decimal_limit = 10**width
+    if value < decimal_limit:
+        return f"{value:>{width}d}"
+    range_per_case = 26 * (36**(width - 1))
+    base_offset = 10 * (36**(width - 1))
+    value -= decimal_limit
+    if value < range_per_case:
+        return _base36_encode(base_offset + value, width, _HY36_DIGITS_UPPER)
+    value -= range_per_case
+    if value < range_per_case:
+        return _base36_encode(base_offset + value, width, _HY36_DIGITS_LOWER)
+    raise ValueError("Value exceeds hybrid-36 representable range")
+
+def _format_pdb_int(value, width, mode):
+    if mode == "hy36":
+        return hy36encode(width, value)
+    if mode == "hex":
+        return f"{value:>{width}X}"
+    if mode == "decimal":
+        return f"{value:>{width}d}"
+    raise ValueError("Unknown format mode: %s" % mode)
+
+def convert_pdb_indices_to_hybrid36(
+    pdbfile,
+    outfile=None,
+    atom_base=10,
+    res_base=10,
+):
+    """Convert atom serials and residue numbers to hybrid-36 in a PDB file."""
+    if outfile is None:
+        outfile = pdbfile
+    dir_name = os.path.dirname(outfile) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix="pdb_hy36_", suffix=".tmp", dir=dir_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fout, \
+             open(pdbfile, "r", encoding="utf-8") as fin:
+            for line in fin:
+                if line.startswith(("ATOM", "HETATM", "ANISOU", "TER")):
+                    raw = line.rstrip("\n")
+                    if len(raw) < 26:
+                        raw = raw.ljust(26)
+                    serial_field = raw[6:11].strip()
+                    resseq_field = raw[22:26].strip()
+                    if serial_field and serial_field != "*****":
+                        try:
+                            serial_num = int(serial_field, atom_base)
+                            serial = hy36encode(5, serial_num)
+                            raw = raw[:6] + serial + raw[11:]
+                        except ValueError:
+                            logger.warning("Failed to parse atom serial '%s' in %s", serial_field, pdbfile)
+                    if resseq_field:
+                        try:
+                            resseq_num = int(resseq_field, res_base)
+                            resseq = hy36encode(4, resseq_num)
+                            raw = raw[:22] + resseq + raw[26:]
+                        except ValueError:
+                            logger.warning("Failed to parse residue id '%s' in %s", resseq_field, pdbfile)
+                    fout.write(raw + "\n")
+                else:
+                    fout.write(line)
+        os.replace(tmp_path, outfile)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def apply_xponge_ion_names(pdbfile, outfile=None):
+    if outfile is None:
+        outfile = pdbfile
+    dir_name = os.path.dirname(outfile) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix="pdb_xponge_", suffix=".tmp", dir=dir_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fout, \
+             open(pdbfile, "r", encoding="utf-8") as fin:
+            for line in fin:
+                if line.startswith(("ATOM", "HETATM")):
+                    raw = line.rstrip("\n")
+                    if len(raw) < 80:
+                        raw = raw.ljust(80)
+                    resname = raw[17:20].strip()
+                    if resname in _XSPONGE_ION_RENAMES:
+                        new_name = _XSPONGE_ION_RENAMES[resname]
+                        atom_field = f"{new_name:>4}"
+                        res_field = f"{new_name:>3}"
+                        elem = "".join(ch for ch in new_name if ch.isalpha()).upper()
+                        elem_field = f"{elem:>2}"[:2]
+                        raw = raw[:12] + atom_field + raw[16:]
+                        raw = raw[:17] + res_field + raw[20:]
+                        raw = raw[:76] + elem_field + raw[78:]
+                    fout.write(raw + "\n")
+                else:
+                    fout.write(line)
+        os.replace(tmp_path, outfile)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 def pdb2pqr_protonate(pdb,overwrite=False,ffout='AMBER',pH=7.0):
     if not pdb2pqr:
@@ -635,17 +812,19 @@ def pdb_write(CA_CB, outfile="test.pdb"):
             handle.write("ATOM  {:>5d} {:>4} {:>3}{:>2}{:>4d}    {:>8.3f}{:>8.3f}{:>8.3f}   1.00  0.00           {:1}\n".format(atom[1],"{:<3}".format(atom[0]),res[0],res[2],res[1],CA_CB[res][atom][0],CA_CB[res][atom][1],CA_CB[res][atom][2],atom[0][0]))
     handle.close()
 
-def pdb_parse_TER(pdbfile, onlybb=True, noH=True, filter_res=None, filter_atm=None):
+def pdb_parse_TER(pdbfile, onlybb=True, noH=True, filter_res=None, filter_atm=None, packmol_hex_after=99999, hexadecimal_indices=False):
     CA_CB = {}
     pdb = open(pdbfile,"r").readlines()
     molnum = 1
     tracker = 1
+    atom_index = 0
     hex_switch = False
     atomlimit = False
     for line in pdb:
         if line.startswith("TER"):
             molnum += 1
         if (line.startswith("ATOM") or line.startswith("HETATM")):
+            atom_index += 1
             if line[6:11].strip() == "*****" and not atomlimit:
                 logger.warning("Found atom number limit '*****'. Atom number parsing will be unreliable")
                 atomlimit = True
@@ -655,9 +834,16 @@ def pdb_parse_TER(pdbfile, onlybb=True, noH=True, filter_res=None, filter_atm=No
             if atomlimit:
                 atomnum = atomnum + 1
             else:
-                atomnum = int(line[6:11].strip(),16) if hex_switch else int(line[6:11].strip()) # asume hex 16 if parsing packmol
+                if hexadecimal_indices:
+                    atomnum = int(line[6:11].strip(),16)
+                else:
+                    # Packmol switches to hex after serial 99999; use atom count to disambiguate numeric hex like "20000".
+                    if packmol_hex_after is not None and atom_index > packmol_hex_after:
+                        atomnum = int(line[6:11].strip(),16)
+                    else:
+                        atomnum = int(line[6:11].strip(),16) if hex_switch else int(line[6:11].strip()) # asume hex 16 if parsing packmol
             atomname = line[12:16].strip()
-            resnum = int(line[22:26].strip())
+            resnum = int(line[22:26].strip(),16) if hexadecimal_indices else int(line[22:26].strip())
             chain = line[21:22]
             id = (molnum,chain)
             if atomname in cgatoms and residue in residues and onlybb:
@@ -682,22 +868,21 @@ def pdb_parse_TER(pdbfile, onlybb=True, noH=True, filter_res=None, filter_atm=No
 
 
 
-def pdb_write_TER(CA_CB, outfile="test.pdb"):
+def pdb_write_TER(CA_CB, outfile="test.pdb", serial_format="hy36", resseq_format="decimal"):
     handle = open(outfile,"w")
     for mol in sorted(CA_CB,key=lambda x:x[0]):
         for atom in sorted(CA_CB[mol], key=lambda x:(x[4],x[1])): # Packmol output comes serialized first and foremost by atomnumber
-            if atom[3] < 100000:
-                handle.write("ATOM  {:>5d} {:>4} {:>3}{:>2}{:>4d}    {:>8.3f}{:>8.3f}{:>8.3f}   1.00  0.00           {:1}\n".format(atom[3],"{:<3}".format(atom[2]),atom[0],mol[1],atom[1],CA_CB[mol][atom][0],CA_CB[mol][atom][1],CA_CB[mol][atom][2],atom[0][0]))
-            else:
-                handle.write("ATOM  {:>5} {:>4} {:>3}{:>2}{:>4d}    {:>8.3f}{:>8.3f}{:>8.3f}   1.00  0.00           {:1}\n".format(hex(atom[3]),"{:<3}".format(atom[2]),atom[0],mol[1],atom[1],CA_CB[mol][atom][0],CA_CB[mol][atom][1],CA_CB[mol][atom][2],atom[0][0]))
+            serial = _format_pdb_int(atom[3], 5, serial_format)
+            resseq = _format_pdb_int(atom[1], 4, resseq_format)
+            handle.write("ATOM  {:>5} {:>4} {:>3}{:>2}{:>4}    {:>8.3f}{:>8.3f}{:>8.3f}   1.00  0.00           {:1}\n".format(serial,"{:<3}".format(atom[2]),atom[0],mol[1],resseq,CA_CB[mol][atom][0],CA_CB[mol][atom][1],CA_CB[mol][atom][2],atom[0][0]))
         handle.write("TER\n")
     handle.write("END\n")
     handle.close()
     return outfile
 
-def find_piercing_lipids(pdb, outfile="noclash.pdb", verbose=False):
-    tails_dict  = pdb_parse_TER(pdb, onlybb=False, filter_res=tails)
-    sterol_PI_dict = pdb_parse_TER(pdb, onlybb=False, filter_res=sterols_PI)
+def find_piercing_lipids(pdb, outfile="noclash.pdb", verbose=False, hexadecimal_indices=False):
+    tails_dict  = pdb_parse_TER(pdb, onlybb=False, filter_res=tails, hexadecimal_indices=hexadecimal_indices)
+    sterol_PI_dict = pdb_parse_TER(pdb, onlybb=False, filter_res=sterols_PI, hexadecimal_indices=hexadecimal_indices)
 
     midpoints = np.zeros((len(tails_dict),50,3))+np.inf
     midpointmap = {}
@@ -761,18 +946,64 @@ def find_piercing_lipids(pdb, outfile="noclash.pdb", verbose=False):
     return to_remove
 
 
-def remove_piercing_lipids(pdb, to_remove, outfile="noclash.pdb", verbose=False):
-    original_dict  = pdb_parse_TER(pdb, onlybb=False, noH=False)
+def remove_piercing_lipids(pdb, to_remove, outfile="noclash.pdb", verbose=False, hexadecimal_indices=False):
+    original_dict  = pdb_parse_TER(pdb, onlybb=False, noH=False, hexadecimal_indices=hexadecimal_indices)
 
     if verbose:
         logger.info("Removing clashing lipids")
     for clash in to_remove:
         del original_dict[clash]
 
-    return pdb_write_TER(original_dict, outfile=outfile)
+    serial_format = "hex" if hexadecimal_indices else "hy36"
+    resseq_format = "hex" if hexadecimal_indices else "decimal"
+    return pdb_write_TER(original_dict, outfile=outfile, serial_format=serial_format, resseq_format=resseq_format)
 
 
-
+def fix_illegal_chain_id (
+    path: str,
+    valid: str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    default: str = "Z",
+    encoding: str = "utf-8",
+    backup: bool = False,
+) -> None:
+    """
+    就地修改 PDB 文件中不合法的链 ID。
+    - 仅处理以 ATOM/HETATM/ANISOU/TER 开头的行
+    - 第 22 列（下标 21）不是 valid 中字符时，改为 default
+    - path: PDB 文件路径
+    - backup: 若为 True，会生成同目录下 path + ".bak" 的备份
+    """
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix="pdb_fix_", suffix=".tmp", dir=dir_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fout, \
+             open(path, "r", encoding=encoding) as fin:
+            target_prefixes = ("ATOM", "HETATM", "ANISOU", "TER")
+            for line in fin:
+                if line.startswith("SEQRES"):
+                    chain = line[11]
+                    if chain not in valid:
+                        line = line[:11] + default + line[12:]
+                if line.startswith(target_prefixes) and len(line) >= 22:
+                    chain = line[21]
+                    if chain not in valid:
+                        line = line[:21] + default + line[22:]
+                fout.write(line)
+        # 是否备份
+        if backup:
+            bak_path = path + ".bak"
+            if os.path.exists(bak_path):
+                os.remove(bak_path)
+            os.rename(path, bak_path)
+        # 用临时文件替换原文件（原子操作）
+        os.replace(tmp_path, path)
+    except Exception:
+        # 失败时清理临时文件再抛出
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        finally:
+            raise
             
 if __name__ == "__main__":
     pdb = sys.argv[1]

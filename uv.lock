@@ -676,30 +676,43 @@ wheels = [
 ]
 
 [[package]]
-name = "packmol-memgen"
+name = "packmol-memgen-minimal"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
-    { name = "mempro" },
     { name = "numpy" },
-    { name = "packmol" },
     { name = "pandas" },
     { name = "pdb2pqr" },
     { name = "scipy" },
     { name = "tqdm" },
 ]
 
+[package.optional-dependencies]
+full = [
+    { name = "mempro" },
+    { name = "packmol" },
+]
+mempro = [
+    { name = "mempro" },
+]
+packmol = [
+    { name = "packmol" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "matplotlib" },
-    { name = "mempro" },
+    { name = "mempro", marker = "extra == 'full'" },
+    { name = "mempro", marker = "extra == 'mempro'" },
     { name = "numpy" },
-    { name = "packmol" },
+    { name = "packmol", marker = "extra == 'full'" },
+    { name = "packmol", marker = "extra == 'packmol'" },
     { name = "pandas" },
     { name = "pdb2pqr", specifier = ">=3.7.1" },
     { name = "scipy" },
     { name = "tqdm" },
 ]
+provides-extras = ["full", "mempro", "packmol"]
 
 [[package]]
 name = "pandas"

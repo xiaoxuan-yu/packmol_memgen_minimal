@@ -1,0 +1,61 @@
+name: Tag and release from version
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "packmol_memgen/__version__.py"
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          python - <<'PY'
+          import re
+          import os
+          from pathlib import Path
+          content = Path("packmol_memgen/__version__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', content, re.M)
+          if not match:
+            raise SystemExit("Could not find __version__ in packmol_memgen/__version__.py")
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as fh:
+            fh.write(f"version={match.group(1)}\n")
+          PY
+        shell: bash
+
+      - name: Check tag exists
+        id: tag_check
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          if git show-ref --tags --verify --quiet "refs/tags/v${version}"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.tag_check.outputs.exists != 'true'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          git tag -a "v${version}" -m "v${version}"
+          git push origin "v${version}"
+
+      - name: Create GitHub release
+        if: steps.tag_check.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
+          generate_release_notes: true
