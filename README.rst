@@ -30,12 +30,22 @@ preserved below; this section summarizes the changes and current behavior.
 ############
 Installation
 ############
-```bash
-pip install packmol-memgen # minimal installation
-pip install packmol-memgen[packmol] # with PACKMOL installation
-pip install packmol-memgen[mempro] # with MemPrO installation
-pip install packmol-memgen[full] # with both PACKMOL and MemPrO installation
-``` 
+Minimal installation (this fork without PACKMOL or MemPrO):
+
+``pip install packmol-memgen-minimal``
+
+With optional packmol as a dependency:
+
+``pip install packmol-memgen-minimal[packmol]``
+
+With optional mempro as a dependency:
+
+``pip install packmol-memgen-minimal[mempro]``
+
+With both optional dependencies:
+
+``pip install packmol-memgen-minimal[full]``
+
 
 ############
 LICENSE NOTE
