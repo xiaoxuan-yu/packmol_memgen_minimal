@@ -533,7 +533,7 @@ class PACKMOLMemgen(object):
             logger.warning("\n"+len(miss)*"#"+"\n"+miss+"\n"+len(miss)*"#"+"\n")
             self.mempro = False
             
-        logger.info(self.mempro if self.mempro else "MemPrO not used")
+        # logger.info(self.mempro if self.mempro else "MemPrO not used")
     
         if not os.path.exists(os.path.join(script_path, lib, "pdbremix")):
             logger.warning("WARNING:PDBREMIX lib not available. Volume estimation will be done based on estimated density")
