@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib.util
+from pathlib import Path
 import pandas as pd
 import tarfile
 script_path = os.path.abspath(os.path.dirname(__file__))+os.path.sep
@@ -26,6 +27,18 @@ except:
         os.environ['COLUMNS'] = str(get_terminal_size()[0])
     except:
         os.environ['COLUMNS'] = "80"
+
+def _prepend_sys_executable_dir_to_path():
+    # Ensure tools installed by `uv tool install` are discoverable via PATH.
+    exe_dir = str(Path(sys.executable).resolve().parent)
+    if not exe_dir:
+        return
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    if exe_dir not in parts:
+        os.environ["PATH"] = os.pathsep.join([exe_dir] + parts)
+
+_prepend_sys_executable_dir_to_path()
 
 
 explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. The input pdb file will be protonated and oriented by default using pdb2pqr and MemPrO; the user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
