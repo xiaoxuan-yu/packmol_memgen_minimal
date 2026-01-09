@@ -197,6 +197,7 @@ class PACKMOLMemgen(object):
         #Get args in self 
         for key, value in args.__dict__.items():
             setattr(self, key, value)
+        self._used_tools = {"packmol-memgen"}
 
     def prepare(self):
  
@@ -784,15 +785,18 @@ class PACKMOLMemgen(object):
                     if not self.preoriented and self.mempro:
                         if self.double_span:
                             logger.debug("Attempting to orient double span protein using MemPrO...")
+                            self._used_tools.add("mempro")
                             pdb, z_offset_ds = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], double_span=True)
                             z_offset_ds = np.abs(z_offset_ds)
                             pdb_ds = pdb
                         else:
                             logger.debug("Orienting the protein using MemPrO...")
+                            self._used_tools.add("mempro")
                             pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n])
                         self.created.append(pdb)
                     if protonate:
                         logger.debug("Adding protons using pdb2pqr at pH "+str(self.pdb2pqr_pH)+"...")
+                        self._used_tools.add("pdb2pqr")
                         pdb =  pdb2pqr_protonate(pdb,overwrite=self.overwrite,pH=self.pdb2pqr_pH)
                         self.created.append(pdb)                 
                     elif self.preoriented and self.double_span:
@@ -1816,6 +1820,7 @@ class PACKMOLMemgen(object):
             logger.debug("Script for packmol written to "+self.packlog+".inp")
 
             if self.packmol_cmd and self.run:
+                self._used_tools.add("packmol")
                 logger.info("\nRunning Packmol...")
                 log = open(self.packlog+".log","w")
                 p = subprocess.Popen(self.packmol_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=script)
@@ -1981,7 +1986,48 @@ class PACKMOLMemgen(object):
         print("\n"+"#"*len(warn))
         logger.info(warn)
         print("#"*len(warn))
+        self._emit_references()
         print("DONE!")
+
+    def _emit_references(self):
+        references = {
+            "packmol-memgen": (
+                "Schott-Verdugo, S.; Gohlke, H. "
+                "PACKMOL-Memgen: A Simple-To-Use, Generalized Workflow for Membrane-Protein–Lipid-Bilayer System Building. "
+                "J. Chem. Inf. Model. 2019, 59 (6), 2522–2528. https://doi.org/10.1021/acs.jcim.9b00269."
+            ),
+            "packmol": (
+                "Martínez, L.; Andrade, R.; Birgin, E. G.; Martínez, J. M. "
+                "PACKMOL: A Package for Building Initial Configurations for Molecular Dynamics Simulations. "
+                "J. Comput. Chem. 2009, 30 (13), 2157–2164. https://doi.org/10.1002/jcc.21224."
+            ),
+            "mempro": (
+                "Parrag, M.; Stansfeld, P. J. "
+                "MemPrO: A Predictive Tool for Membrane Protein Orientation. "
+                "J. Chem. Theory Comput. 2025, published online Dec 23, 2025. https://doi.org/10.1021/acs.jctc.5c01433."
+            ),
+            "pdb2pqr": (
+                "Dolinsky, T. J.; Czodrowski, P.; Li, H.; Nielsen, J. E.; Jensen, J. H.; Klebe, G.; Baker, N. A. "
+                "PDB2PQR: Expanding and Upgrading Automated Preparation of Biomolecular Structures for Molecular Simulations. "
+                "Nucleic Acids Res. 2007, 35 (Web Server issue), W522–W525. https://doi.org/10.1093/nar/gkm276."
+                "\n"
+                "Dolinsky, T. J.; Nielsen, J. E.; McCammon, J. A.; Baker, N. A. "
+                "PDB2PQR: An Automated Pipeline for the Setup of Poisson–Boltzmann Electrostatics Calculations. "
+                "Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381."
+            ),
+        }
+        used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "pdb2pqr") if tool in self._used_tools]
+        if not used:
+            return
+        header = "References (for tools used in this run):"
+        logger.info(header)
+        print(header)
+        for tool in used:
+            entry = references.get(tool)
+            if entry:
+                line = "- " + entry
+                logger.info(line)
+                print(line)
 
     def run_all(self):
         pack = self.prepare()
