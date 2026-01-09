@@ -96,7 +96,6 @@ INSTALLATION
 
 The main installation of Packmol Memgen is intended to be installed within AmberTools20. If that is not the case
 the following instructions could be follow to make it run as a stand-alone, though it is not officially supported.
-This fork targets standalone usage with PyPI dependencies and does not require AMBERHOME.
 
 Dependencies:
 Boost (tested with 1.54 or above)
