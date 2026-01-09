@@ -1956,6 +1956,7 @@ class PACKMOLMemgen(object):
         if self.hexadecimal_indices:
             convert_pdb_indices_to_hybrid36(self.outfile, atom_base=16, res_base=16)
         if self.xponge:
+            logger.info("Applying Xponge ion names for compatibility with Xponge")
             apply_xponge_ion_names(self.outfile)
     
     def cleanup(self):
