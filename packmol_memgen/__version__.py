@@ -10,5 +10,5 @@
 #                / /\/\ \  __/ | | | | / /_ \  __/ | | |
 #                \/    \/\___|_| |_| |_\____/\___|_| |_|
 
-__version__ = "1.1.0"
+__version__ = "0.0.0"
 VERSION = tuple(int(part) for part in __version__.split("."))

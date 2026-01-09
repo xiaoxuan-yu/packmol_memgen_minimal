@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.21"]
+requires = ["hatchling>=1.21", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -27,7 +27,8 @@ dependencies = [
   "scipy",
   "tqdm",
   "pdb2pqr>=3.7.1",
-  "matplotlib"
+  "matplotlib",
+  "hatch-vcs>=0.5.0",
 ]
 dynamic = ["version"]
 
@@ -57,5 +58,8 @@ include = [
 ]
 
 [tool.hatch.version]
-path = "packmol_memgen/__version__.py"
-pattern = "^__version__ = \"(?P<version>[^\"]+)\""
+source = "vcs"
+tag-pattern = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "packmol_memgen/__version__.py"
