@@ -8,3 +8,6 @@
 env/
 venv/
 ENV/
+
+# version file
+packmol_memgen/__version__.py

@@ -1709,6 +1709,33 @@ class PACKMOLMemgen(object):
         pdb_base = os.path.basename(pdb)
         tmp_folder = os.path.abspath("_tmp_"+pdb_base[:-4]+n_ter+"_MEMPRO")
         out_dir = tmp_folder + os.path.sep
+        if os.path.exists(output) and not overwrite:
+            logger.info("MemPrO output exists at %s; skipping MemPrO execution.", output)
+            if double_span:
+                info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
+                if not os.path.exists(info_path):
+                    logger.warning(
+                        "MemPrO info_rank_1.txt not found for cached output; "
+                        "using z_offset=0.0. Rerun with --overwrite to regenerate."
+                    )
+                    return (output, 0.0)
+                z_offset = None
+                with open(info_path, "r") as f:
+                    for line in f:
+                        if line.startswith("Iter-Membrane distance"):
+                            try:
+                                z_offset = float(line.split(":")[1].split()[0])
+                            except:
+                                z_offset = None
+                            break
+                if z_offset is None:
+                    logger.warning(
+                        "Could not parse inter-membrane distance from cached MemPrO output; "
+                        "using z_offset=0.0. Rerun with --overwrite to regenerate."
+                    )
+                    z_offset = 0.0
+                return (output, z_offset)
+            return output
         if not os.path.exists(output) or overwrite:
             if not os.path.exists(tmp_folder):
                 os.mkdir(tmp_folder)
@@ -1991,43 +2018,47 @@ class PACKMOLMemgen(object):
 
     def _emit_references(self):
         references = {
-            "packmol-memgen": (
+            "packmol-memgen": [
                 "Schott-Verdugo, S.; Gohlke, H. "
                 "PACKMOL-Memgen: A Simple-To-Use, Generalized Workflow for Membrane-Protein–Lipid-Bilayer System Building. "
                 "J. Chem. Inf. Model. 2019, 59 (6), 2522–2528. https://doi.org/10.1021/acs.jcim.9b00269."
-            ),
-            "packmol": (
+            ],
+            "packmol": [
                 "Martínez, L.; Andrade, R.; Birgin, E. G.; Martínez, J. M. "
                 "PACKMOL: A Package for Building Initial Configurations for Molecular Dynamics Simulations. "
                 "J. Comput. Chem. 2009, 30 (13), 2157–2164. https://doi.org/10.1002/jcc.21224."
-            ),
-            "mempro": (
+            ],
+            "mempro": [
                 "Parrag, M.; Stansfeld, P. J. "
                 "MemPrO: A Predictive Tool for Membrane Protein Orientation. "
                 "J. Chem. Theory Comput. 2025, published online Dec 23, 2025. https://doi.org/10.1021/acs.jctc.5c01433."
-            ),
-            "pdb2pqr": (
+            ],
+            "pdb2pqr": [
                 "Dolinsky, T. J.; Czodrowski, P.; Li, H.; Nielsen, J. E.; Jensen, J. H.; Klebe, G.; Baker, N. A. "
                 "PDB2PQR: Expanding and Upgrading Automated Preparation of Biomolecular Structures for Molecular Simulations. "
-                "Nucleic Acids Res. 2007, 35 (Web Server issue), W522–W525. https://doi.org/10.1093/nar/gkm276."
-                "\n"
+                "Nucleic Acids Res. 2007, 35 (Web Server issue), W522–W525. https://doi.org/10.1093/nar/gkm276.",
                 "Dolinsky, T. J.; Nielsen, J. E.; McCammon, J. A.; Baker, N. A. "
                 "PDB2PQR: An Automated Pipeline for the Setup of Poisson–Boltzmann Electrostatics Calculations. "
-                "Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381."
-            ),
+                "Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381.",
+            ],
         }
         used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "pdb2pqr") if tool in self._used_tools]
         if not used:
             return
+        tool_labels = {
+            "packmol-memgen": "PACKMOL-Memgen",
+            "packmol": "PACKMOL",
+            "mempro": "MemPrO",
+            "pdb2pqr": "PDB2PQR",
+        }
         header = "References (for tools used in this run):"
         logger.info(header)
-        print(header)
         for tool in used:
-            entry = references.get(tool)
-            if entry:
-                line = "- " + entry
+            entries = references.get(tool, [])
+            for entry in entries:
+                label = tool_labels.get(tool, tool)
+                line = "- [" + label + "] " + entry
                 logger.info(line)
-                print(line)
 
     def run_all(self):
         pack = self.prepare()
