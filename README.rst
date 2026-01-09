@@ -119,11 +119,6 @@ This folder can be easily cleaned by executing "./example.sh clean"
 ##############
 CHANGELOG 
 ##############
-
-2025.3.xx
- - Fork: standalone usage with PyPI dependencies and PATH/uv packmol discovery.
- - Replaced memembed/ppm3 alignment with MemPrO (Python + JAX).
- - Protonation defaults to pdb2pqr instead of reduce.
 2025.3.22
  - Added initial functionality to support Packmol's PBC option
 2025.3.17
