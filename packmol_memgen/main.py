@@ -150,6 +150,8 @@ embedopt.add_argument("--mempro_grid",type=int,default=36,            help=argpa
 embedopt.add_argument("--mempro_iters",type=int,default=150,          help=argparse.SUPPRESS if short_help else "MemPrO minimization iterations (-ni)")
 embedopt.add_argument("--mempro_rank",type=str,default="auto",choices=["auto","h","p"],help=argparse.SUPPRESS if short_help else "MemPrO rank mode (-rank)")
 embedopt.add_argument("--mempro_args",type=str,                       help=argparse.SUPPRESS if short_help else "Extra arguments passed to MemPrO")
+embedopt.add_argument("--mempro_curvature", action="store_true",      help=argparse.SUPPRESS if short_help else "use MemPrO curvature (-c) and set --curvature from Global curvature in info_rank_1.txt")
+embedopt.add_argument("--no-keep-mempro", action="store_false", dest="keep_mempro", help=argparse.SUPPRESS if short_help else "remove MemPrO outputs and working folder during cleanup")
 
 packmolopt = parser.add_argument_group('PACKMOL options')
 packmolopt.add_argument("--nloop",       type=int,default=20,         help=argparse.SUPPRESS if short_help else "number of nloops for GENCAN routine in PACKMOL. PACKMOL MEMGEN uses 20 by default; you might consider increasing the number to improve packing. Increasing the number of components requires more GENCAN loops.")
@@ -487,6 +489,7 @@ class PACKMOLMemgen(object):
         # Make a list with created files for later deletion
         self.created        = []
         self.created_notrun = []
+        self.created_mempro = []
 
         ###############################################
         ###############################################
@@ -793,7 +796,10 @@ class PACKMOLMemgen(object):
                             logger.debug("Orienting the protein using MemPrO...")
                             self._used_tools.add("mempro")
                             pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n])
-                        self.created.append(pdb)
+                        if self.keep_mempro:
+                            self.created_mempro.append(pdb)
+                        else:
+                            self.created.append(pdb)
                     if protonate:
                         logger.debug("Adding protons using pdb2pqr at pH "+str(self.pdb2pqr_pH)+"...")
                         self._used_tools.add("pdb2pqr")
@@ -1707,12 +1713,14 @@ class PACKMOLMemgen(object):
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="in"):
         output = pdb[:-4]+n_ter+"_MEMPRO.pdb"
         pdb_base = os.path.basename(pdb)
-        tmp_folder = os.path.abspath("_tmp_"+pdb_base[:-4]+n_ter+"_MEMPRO")
+        tmp_prefix = "" if self.keep_mempro else "_tmp_"
+        tmp_folder = os.path.abspath(tmp_prefix+pdb_base[:-4]+n_ter+"_MEMPRO")
         out_dir = tmp_folder + os.path.sep
+        info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
         if os.path.exists(output) and not overwrite:
             logger.info("MemPrO output exists at %s; skipping MemPrO execution.", output)
+            self._apply_mempro_curvature(info_path)
             if double_span:
-                info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
                 if not os.path.exists(info_path):
                     logger.warning(
                         "MemPrO info_rank_1.txt not found for cached output; "
@@ -1739,7 +1747,10 @@ class PACKMOLMemgen(object):
         if not os.path.exists(output) or overwrite:
             if not os.path.exists(tmp_folder):
                 os.mkdir(tmp_folder)
-            self.created.append(tmp_folder)
+            if self.keep_mempro:
+                self.created_mempro.append(tmp_folder)
+            else:
+                self.created.append(tmp_folder)
             if "NUM_CPU" not in os.environ or not os.environ["NUM_CPU"].strip():
                 os.environ["NUM_CPU"] = str(os.cpu_count() or 1)
             if "PATH_TO_MARTINI" not in os.environ or not os.environ["PATH_TO_MARTINI"].strip():
@@ -1773,6 +1784,8 @@ class PACKMOLMemgen(object):
             cmd += ["-f", pdb, "-o", out_dir, "-ng", str(self.mempro_grid), "-ni", str(self.mempro_iters), "-rank", self.mempro_rank]
             if double_span:
                 cmd.append("-dm")
+            if self.mempro_curvature:
+                cmd.append("-c")
             if self.mempro_args:
                 cmd += shlex.split(self.mempro_args)
             if verbose:
@@ -1796,8 +1809,8 @@ class PACKMOLMemgen(object):
                     cleaned.append(line)
             with open(output, "w") as f:
                 f.writelines(cleaned)
+        self._apply_mempro_curvature(info_path)
         if double_span:
-            info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
             if not os.path.exists(info_path):
                 logger.critical("CRITICAL:\n  MemPrO info_rank_1.txt not found for double_span orientation.")
                 exit()
@@ -1815,6 +1828,39 @@ class PACKMOLMemgen(object):
                 exit()
             return (output, z_offset)
         return output
+
+    def _parse_mempro_global_curvature(self, info_path):
+        if not os.path.exists(info_path):
+            return None
+        with open(info_path, "r") as handle:
+            for line in handle:
+                if "Global curvature" not in line:
+                    continue
+                try:
+                    return float(line.split(":")[1].split()[0])
+                except:
+                    return None
+        return None
+
+    def _apply_mempro_curvature(self, info_path):
+        if not self.mempro_curvature:
+            return
+        curvature = self._parse_mempro_global_curvature(info_path)
+        if curvature is None:
+            logger.warning("MemPrO Global curvature not found in %s; --curvature unchanged.", info_path)
+            return
+        if abs(curvature) < 1e-9:
+            logger.warning("MemPrO Global curvature is ~0.0; treating membrane as flat.")
+            return
+        if self.curvature is not None:
+            logger.info("MemPrO Global curvature available; keeping user-provided --curvature=%s.", self.curvature)
+            return
+        if self.vol or self.solvate:
+            logger.critical("CRITICAL:\n  MemPrO curvature is not compatible with --vol or --solvate.")
+            exit()
+        self.curvature = curvature
+        self.curv_radius = 1 / curvature
+        logger.info("Using MemPrO Global curvature as --curvature: %s", curvature)
 
     def pdbvol(self,pdb,spacing=0.5,overwrite=False):
         output = pdb[:-4]+".grid.pdb"
