@@ -46,6 +46,12 @@ With both optional dependencies:
 
 ``pip install packmol-memgen-minimal[full]``
 
+You may prefer mordern Python packaging tools such as `uv` to install 
+
+``uv tool install packmol-memgen-minimal``
+
+extras are supported in `uv` as well. Other tools may work similarly.
+
 
 ############
 LICENSE NOTE
