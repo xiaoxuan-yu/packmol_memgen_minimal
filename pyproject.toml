@@ -7,7 +7,7 @@ name = "packmol-memgen-minimal"
 description = "A fork of packmol_memgen from AmberTools, a PACKMOL wrapper for packing proteins into membranes, aimed to be minimal, mordernized and self-contained."
 readme = "README.rst"
 requires-python = ">=3.11"
-license = { text = "GPL-2.0-only" }
+license = { file = "LICENSE" }
 authors = [
   { name = "Xiaoxuan Yu", email = "xiaoxuan_yu@pku.edu.cn" },
 ]
