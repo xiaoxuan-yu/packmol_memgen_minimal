@@ -789,12 +789,14 @@ class PACKMOLMemgen(object):
                         if self.double_span:
                             logger.debug("Attempting to orient double span protein using MemPrO...")
                             self._used_tools.add("mempro")
+                            self._used_tools.add("martini")
                             pdb, z_offset_ds = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], double_span=True)
                             z_offset_ds = np.abs(z_offset_ds)
                             pdb_ds = pdb
                         else:
                             logger.debug("Orienting the protein using MemPrO...")
                             self._used_tools.add("mempro")
+                            self._used_tools.add("martini")
                             pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n])
                         if self.keep_mempro:
                             self.created_mempro.append(pdb)
@@ -2077,7 +2079,12 @@ class PACKMOLMemgen(object):
             "mempro": [
                 "Parrag, M.; Stansfeld, P. J. "
                 "MemPrO: A Predictive Tool for Membrane Protein Orientation. "
-                "J. Chem. Theory Comput. 2025, published online Dec 23, 2025. https://doi.org/10.1021/acs.jctc.5c01433."
+                "J. Chem. Theory Comput. 2025. https://doi.org/10.1021/acs.jctc.5c01433."
+            ],
+            "martini": [
+                "Souza, P. C. T.; Alessandri, R.; Barnoud, J.; et al. "
+                "Martini 3: a general purpose force field for coarse-grained molecular dynamics. "
+                "Nat Methods 2021, 18, 382–388. https://doi.org/10.1038/s41592-021-01098-3."
             ],
             "pdb2pqr": [
                 "Dolinsky, T. J.; Czodrowski, P.; Li, H.; Nielsen, J. E.; Jensen, J. H.; Klebe, G.; Baker, N. A. "
@@ -2088,13 +2095,14 @@ class PACKMOLMemgen(object):
                 "Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381.",
             ],
         }
-        used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "pdb2pqr") if tool in self._used_tools]
+        used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "martini", "pdb2pqr") if tool in self._used_tools]
         if not used:
             return
         tool_labels = {
             "packmol-memgen": "PACKMOL-Memgen",
             "packmol": "PACKMOL",
             "mempro": "MemPrO",
+            "martini": "Martini",
             "pdb2pqr": "PDB2PQR",
         }
         header = "References (for tools used in this run):"
