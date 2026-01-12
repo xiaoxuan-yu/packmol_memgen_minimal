@@ -63,6 +63,11 @@ MemPrO is an optional external command-line tool distributed under the GNU GPL v
 This project interacts with MemPrO via subprocess calls; MemPrO is not bundled into
 this package and its license applies to MemPrO itself.
 
+The martini force field parameter file `packmol_memgen/data/martini_v3.0.0.itp` is 
+sourced from https://github.com/Martini-Force-Field-Initiative/martini-forcefields 
+and is distributed under the Apache License 2.0. The full Apache 2.0 license text 
+is provided at `packmol_memgen/data/LICENSE.Apache-2.0`.
+
 ##########
 CREDITS
 ##########
@@ -72,20 +77,24 @@ software. Please refer to each project for license terms.
 
 Core dependencies (installed via PyPI):
 
-- NumPy, SciPy, pandas, tqdm, matplotlib
-- PDB2PQR
-- docopt
+- NumPy (https://github.com/numpy/numpy)
+- SciPy (https://github.com/scipy/scipy)
+- pandas (https://github.com/pandas-dev/pandas)
+- tqdm (https://github.com/tqdm/tqdm)
+- matplotlib (https://github.com/matplotlib/matplotlib)
+- PDB2PQR (https://github.com/Electrostatics/pdb2pqr)
+- docopt (https://github.com/docopt/docopt)
 
 Optional external tools (installed separately; invoked via subprocess):
 
-- PACKMOL (MIT License)
-- MemPrO (GNU GPL v3)
+- PACKMOL (MIT License, https://github.com/m3g/packmol)
+- MemPrO (GNU GPL v3, https://github.com/ShufflerBardOnTheEdge/MemPrO)
 
 Additional utilities used by this workflow:
 
-- PDBREMIX (MIT License)
-- charmmlipid2amber
-
+- PDBREMIX (MIT License, https://github.com/boscoh/pdbremix)
+- charmmlipid2amber (GPL-2.0, from `AmberTools 2025`, https://ambermd.org/AmberTools.php)
+- Martini 3 force field parameters (Apache-2.0, https://github.com/Martini-Force-Field-Initiative/martini-forcefields)
 
 
 #############################################################
