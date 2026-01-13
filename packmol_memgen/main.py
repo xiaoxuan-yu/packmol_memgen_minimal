@@ -63,16 +63,14 @@ _prepend_uv_tool_dirs_to_path()
 
 explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. The input pdb file will be protonated and oriented by default using pdb2pqr and MemPrO; the user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
 
- If you use this script, please cite:
+ If you use this script, please cite the tools reported at the end of the run:
 
-    **Schott-Verdugo, S and Gohlke, H, PACKMOL-Memgen: A Simple-To-Use, Generalized Workflow for Membrane-Protein-Lipid-Bilayer System Building, Journal of Chemical Information and Modeling,  59, 6, 2522-2528., 2019
-
-    depending on the options used, you should also cite and/or acknowledge:
-
-    PACKMOL:    **Leandro Martinez (L. Martinez, R. Andrade, E. G. Birgin, J. M. Martinez. Packmol: A package for building initial configurations for molecular dynamics simulations. Journal of Computational Chemistry, 30(13):2157-2164, 2009.)
-    MemPrO:     **Parrag et al. MemPrO: Membrane Protein Orientation in Lipid Bilayers. JCTC 2025.
-    **Bosco K. Ho (http://boscoh.com/ ; https://github.com/boscoh/pdbremix)
-    **Benjamin D. Madej (charmmlipid2amber.py)
+    - [PACKMOL-Memgen] Schott-Verdugo, S.; Gohlke, H. PACKMOL-Memgen: A Simple-To-Use, Generalized Workflow for Membrane-Protein–Lipid-Bilayer System Building. J. Chem. Inf. Model. 2019, 59 (6), 2522–2528. https://doi.org/10.1021/acs.jcim.9b00269.
+    - [PACKMOL] Martínez, L.; Andrade, R.; Birgin, E. G.; Martínez, J. M. PACKMOL: A Package for Building Initial Configurations for Molecular Dynamics Simulations. J. Comput. Chem. 2009, 30 (13), 2157–2164. https://doi.org/10.1002/jcc.21224.
+    - [MemPrO] Parrag, M.; Stansfeld, P. J. MemPrO: A Predictive Tool for Membrane Protein Orientation. J. Chem. Theory Comput. 2025. https://doi.org/10.1021/acs.jctc.5c01433.
+    - [Martini] Souza, P. C. T.; Alessandri, R.; Barnoud, J.; et al. Martini 3: a general purpose force field for coarse-grained molecular dynamics. Nat Methods 2021, 18, 382–388. https://doi.org/10.1038/s41592-021-01098-3.
+    - [PDB2PQR] Dolinsky, T. J.; Czodrowski, P.; Li, H.; Nielsen, J. E.; Jensen, J. H.; Klebe, G.; Baker, N. A. PDB2PQR: Expanding and Upgrading Automated Preparation of Biomolecular Structures for Molecular Simulations. Nucleic Acids Res. 2007, 35 (Web Server issue), W522–W525. https://doi.org/10.1093/nar/gkm276.
+    - [PDB2PQR] Dolinsky, T. J.; Nielsen, J. E.; McCammon, J. A.; Baker, N. A. PDB2PQR: An Automated Pipeline for the Setup of Poisson–Boltzmann Electrostatics Calculations. Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381.
 
 """
 
