@@ -1,0 +1,45 @@
+# Generated from Insane4MemPrO
+# Source: /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/.venv/lib/python3.13/site-packages/mempro/Insane4MemPrO.py
+# Count: 42
+ALA
+ARG
+ASN
+ASP
+BMW
+BUT
+CELL
+CL
+CYS
+FG4W
+FG4W-MS
+FRUC
+GLN
+GLU
+GLUC
+GLY
+HYP
+ILE
+K
+KOJI
+LAMI
+LEU
+LYS
+MALT
+MET
+Mg
+NA
+NIGE
+PHE
+PRO
+PW
+SER
+SOPH
+SPC
+SPCM
+SUCR
+THR
+TREH
+TRP
+TYR
+VAL
+W

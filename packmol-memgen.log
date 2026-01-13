@@ -1,0 +1,38 @@
+01/08/2026 09:53:15 PM:DEBUG:
+Execution line:     ./packmol_memgen/main.py --pdb ./tmp_test//4G1U.pdb --lipids DOPE:DOPG --ratio 3:1 --salt_c K+ --plot --verbose -o ./tmp_test/out.pdb --packmol /home/youmans/.pixi/bin/packmol
+01/08/2026 09:53:15 PM:DEBUG:
+Defaulting to pdb2pqr for protonation.
+01/08/2026 09:53:15 PM:INFO:
+/home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO
+01/08/2026 09:53:15 PM:DEBUG:
+Orienting the protein using MemPrO...
+01/08/2026 09:53:15 PM:INFO:
+Running MemPrO: /home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO -f /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/tmp_test/4G1U.pdb -o /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/_tmp_4G1Uin_MEMPRO/ -ng 36 -ni 150 -rank auto
+01/08/2026 09:53:28 PM:DEBUG:
+Execution line:     ./packmol_memgen/main.py --pdb ./tmp_test//4G1U.pdb --lipids DOPE:DOPG --ratio 3:1 --salt_c K+ --plot --verbose -o ./tmp_test/out.pdb
+01/08/2026 09:53:28 PM:DEBUG:
+Defaulting to pdb2pqr for protonation.
+01/08/2026 09:53:28 PM:INFO:
+/home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO
+01/08/2026 09:53:28 PM:DEBUG:
+Orienting the protein using MemPrO...
+01/08/2026 09:53:28 PM:INFO:
+Running MemPrO: /home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO -f /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/tmp_test/4G1U.pdb -o /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/_tmp_4G1Uin_MEMPRO/ -ng 36 -ni 150 -rank auto
+01/08/2026 09:53:54 PM:DEBUG:
+Execution line:     ./packmol_memgen/main.py --pdb ./tmp_test/4G1U.pdb --lipids DOPE:DOPG --ratio 3:1 --salt_c K+ --plot --verbose -o ./tmp_test/out.pdb
+01/08/2026 09:53:54 PM:DEBUG:
+Defaulting to pdb2pqr for protonation.
+01/08/2026 09:53:54 PM:INFO:
+/home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO
+01/08/2026 09:53:55 PM:DEBUG:
+Orienting the protein using MemPrO...
+01/08/2026 09:53:55 PM:INFO:
+Running MemPrO: /home/youmans/.local/share/uv/tools/packmol-memgen-minimal/bin/MemPrO -f /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/tmp_test/4G1U.pdb -o /home/youmans/work/SPONGE_toolkits/membrane_builder/packmol_memgen_minimal/_tmp_4G1Uin_MEMPRO/ -ng 36 -ni 150 -rank auto
+01/08/2026 09:57:03 PM:DEBUG:
+Adding protons using pdb2pqr at pH 7.0...
+01/13/2026 04:33:24 PM:DEBUG:
+Execution line:     /home/youmans/.local/bin/packmol-memgen --available_lipids
+01/13/2026 04:33:51 PM:DEBUG:
+Execution line:     /home/youmans/.local/bin/packmol-memgen --available_solvents
+01/13/2026 04:34:00 PM:DEBUG:
+Execution line:     /home/youmans/.local/bin/packmol-memgen --available_ions

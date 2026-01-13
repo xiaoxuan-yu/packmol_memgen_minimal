@@ -35,7 +35,11 @@ dynamic = ["version"]
 [project.optional-dependencies]
 packmol = ["packmol"]
 mempro = ["mempro"]
-full = ["packmol", "mempro"]
+martini  = [
+    "mdtraj",
+    "vermouth",
+]
+full = ["packmol", "mempro", "vermouth", "mdtraj"]
 
 [project.urls]
 Homepage = "https://github.com/xiaoxuan-yu/packmol_memgen_minimal/"

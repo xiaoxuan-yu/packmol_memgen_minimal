@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from __future__ import print_function
-import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib.util
+import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib.util, re
 from pathlib import Path
 import pandas as pd
 import tarfile
@@ -123,6 +123,8 @@ parser.add_argument("-o","--output",type=str,                     help=argparse.
 parser.add_argument("--charmm",     action="store_true",          help=argparse.SUPPRESS if short_help else "the output will be in CHARMM format instead of AMBER. Works only for small subset of lipids (see --available_lipids)")
 parser.add_argument("--translate", nargs=3, type=float, default=[0,0,0], help=argparse.SUPPRESS if short_help else "pass a vector as  x y z  to translate the oriented pdb. Ex. ' 0 0 4 '")
 parser.add_argument("--sirah", action="store_true",               help=argparse.SUPPRESS if short_help else "use SIRAH lipids, and corase-grain protein input. Will adapt tolerance accordingly. Only small subset of lipids available!")
+parser.add_argument("--martini", action="store_true",             help=argparse.SUPPRESS if short_help else "enable MemPrO+Insane4MemPrO system building for CG inputs")
+parser.add_argument("--martinized", action="store_true",          help=argparse.SUPPRESS if short_help else "skip martinize2 coarse-graining (input already Martini CG)")
 parser.add_argument("--verbose",    action="store_true",          help=argparse.SUPPRESS if short_help else "verbose mode")
 parser.add_argument("--xponge",     action="store_true",          help=argparse.SUPPRESS if short_help else "postprocess ion names to Xponge-compatible identifiers")
 
@@ -150,6 +152,8 @@ embedopt.add_argument("--mempro_rank",type=str,default="auto",choices=["auto","h
 embedopt.add_argument("--mempro_args",type=str,                       help=argparse.SUPPRESS if short_help else "Extra arguments passed to MemPrO")
 embedopt.add_argument("--mempro_curvature", action="store_true",      help=argparse.SUPPRESS if short_help else "use MemPrO curvature (-c) and set --curvature from Global curvature in info_rank_1.txt")
 embedopt.add_argument("--no-keep-mempro", action="store_false", dest="keep_mempro", help=argparse.SUPPRESS if short_help else "remove MemPrO outputs and working folder during cleanup")
+embedopt.add_argument("--insane_build_ranks",type=int, dest="build_system", help=argparse.SUPPRESS if short_help else "Build a MD ready CG-system for ranks < n via MemPrO and Insane4MemPrO.")
+embedopt.add_argument("--insane_args",type=str, dest="build_arguments", help=argparse.SUPPRESS if short_help else "Arguments passed to Insane4MemPrO via MemPrO (-bd_args)")
 
 packmolopt = parser.add_argument_group('PACKMOL options')
 packmolopt.add_argument("--nloop",       type=int,default=20,         help=argparse.SUPPRESS if short_help else "number of nloops for GENCAN routine in PACKMOL. PACKMOL MEMGEN uses 20 by default; you might consider increasing the number to improve packing. Increasing the number of components requires more GENCAN loops.")
@@ -198,6 +202,7 @@ class PACKMOLMemgen(object):
         for key, value in args.__dict__.items():
             setattr(self, key, value)
         self._used_tools = {"packmol-memgen"}
+        self.martini_build_output = None
 
     def prepare(self):
  
@@ -305,6 +310,11 @@ class PACKMOLMemgen(object):
                     print((pformat+" ***Only available with SIRAH").format(key,self.parameters[key]["charge"],self.parameters[key]["name"]))
                 else:
                     print(pformat.format(key,self.parameters[key]["charge"],self.parameters[key]["name"]))
+            insane_lipids = self._load_insane_lipids()
+            if insane_lipids:
+                print("\nInsane4MemPrO lipids (lipidsa):", file=sys.stderr)
+                for name in sorted(insane_lipids):
+                    print(name, file=sys.stderr)
             exit()
     
     
@@ -337,6 +347,11 @@ class PACKMOLMemgen(object):
             print("-"*len(table_header), file=sys.stderr)
             for key in sorted(self.sparameters):
                 print(pformat.format(key,self.sparameters[key]["density"],self.sparameters[key]["MW"],self.sparameters[key]["charge"],self.sparameters[key]["name"],self.sparameters[key]["source"]))
+            insane_solvents = self._load_insane_solvents()
+            if insane_solvents:
+                print("\nInsane4MemPrO solvents (solventParticles):", file=sys.stderr)
+                for name in sorted(insane_solvents):
+                    print(name, file=sys.stderr)
             exit()
     
         if self.available_ions:
@@ -419,7 +434,34 @@ class PACKMOLMemgen(object):
             self.outfile = pdb_prefix+"_"+"".join([os.path.basename(pdb)[:-4] for pdb in self.pdb])+".pdb"
     
         if lipids is not None:
-            if any([self.parameters[l]["ext"] for lipid in lipids for leaf in lipid.split("//") for l in leaf.split(":")]):
+            if self.martini:
+                insane_lipids = self._load_insane_lipids()
+                if insane_lipids:
+                    missing = []
+                    for lipid in lipids:
+                        for leaf in lipid.split("//"):
+                            for entry in leaf.split(":"):
+                                if entry not in insane_lipids:
+                                    missing.append(entry)
+                    if missing:
+                        logger.critical(
+                            "CRITICAL:\n  Martini lipid(s) not found in Insane4MemPrO lipidsa: %s",
+                            ", ".join(sorted(set(missing))),
+                        )
+                        exit()
+                else:
+                    logger.warning(
+                        "WARNING:\n  Insane4MemPrO lipids list not available; skipping --martini lipid validation."
+                    )
+            if any(
+                [
+                    self.parameters[l]["ext"]
+                    for lipid in lipids
+                    for leaf in lipid.split("//")
+                    for l in leaf.split(":")
+                    if l in self.parameters
+                ]
+            ):
                 logger.info("The Lipid Force Field extension lipid_ext is required for this system.")
         saltcon = self.saltcon # salt concentration in M
         if not self.salt:
@@ -434,6 +476,23 @@ class PACKMOLMemgen(object):
             self.ion_dict = {"K+":("siKW",1,"KW"),"Na+":("siNaW",1,"NaW"),"Ca2+":("siCaX",2,"CaX"),"Cl-":("siClW",-1,"ClW")}
         else:
             self.ion_dict = amber_ion_dict 
+        if self.martini:
+            insane_solvents = {s.upper() for s in self._load_insane_solvents()}
+            if insane_solvents:
+                def _ion_token(name):
+                    return re.sub(r"[^A-Za-z]", "", name).upper()
+                for ion_name in (self.salt_c, self.salt_a):
+                    token = _ion_token(ion_name)
+                    if token and token not in insane_solvents:
+                        logger.critical(
+                            "CRITICAL:\n  Martini ion %s not found in Insane4MemPrO solvents list.",
+                            ion_name,
+                        )
+                        exit()
+            else:
+                logger.warning(
+                    "WARNING:\n  Insane4MemPrO solvents list not available; skipping Martini ion validation."
+                )
         if self.salt_c not in self.ion_dict:
             logger.error("ERROR:\n    The specified cation option is no available at the moment")
             exit()
@@ -479,7 +538,11 @@ class PACKMOLMemgen(object):
         protonate = self.notprotonate
         grid_calc = self.notgridvol
         self.delete = not self.keep
-    
+
+        if self.martini and protonate:
+            logger.info("Martini mode enabled; skipping protonation.")
+            protonate = False
+
         # JSwails suggestion//Check if in a tty. Turn off progress bar if that's the case.
         if not os.isatty(sys.stdin.fileno()):
             self.noprogress = True
@@ -573,6 +636,12 @@ class PACKMOLMemgen(object):
     
         if lipids is None:
             lipids = ["DOPC"]
+        if self.martini and any("//" in lipid for lipid in lipids):
+            logger.error("ERROR:\n    --martini does not support '//' leaflet syntax in --lipids.")
+            exit()
+        if self.martini and self.ratio and any("//" in ratio for ratio in self.ratio):
+            logger.error("ERROR:\n    --martini does not support '//' leaflet syntax in --ratio.")
+            exit()
         if self.double and len(lipids) == 1:
             lipids = lipids+["//".join(reversed(lipids[0].split("//")))]
         elif self.double and len(lipids) != 1:
@@ -587,11 +656,18 @@ class PACKMOLMemgen(object):
             self.ratio  = ["1"]*len(lipids)
         if self.double and len(lipids) == 2 and len(self.ratio) == 1:
             self.ratio = self.ratio+["//".join(reversed(self.ratio[0].split("//")))]
-    
+
         if len(lipids) != len(self.ratio):
             logger.error("ERROR:\n    Number of defined bilayer lipids and ratios doesn't fit! Check your input")
             exit()
-    
+        if self.martini and self.build_system is not None and not (self.build_arguments and self.build_arguments.strip()):
+            auto_args = self._auto_build_insane_args()
+            if auto_args:
+                logger.info("Auto-constructed --insane_args: %s", auto_args)
+                self.build_arguments = auto_args
+            else:
+                logger.warning("WARNING:\n  Could not auto-construct --insane_args; provide it explicitly.")
+
         if self.n_ter is None and self.double:
             self.n_ter = ["in","out"]
         elif self.n_ter is None:
@@ -783,6 +859,9 @@ class PACKMOLMemgen(object):
                 if pdb != "None":
                     if not self.verbose:
                         logger.info("Preprocessing "+pdb+". This might take a minute.")
+                    if self.martini and not self.martinized:
+                        logger.debug("Running martinize2 for %s", pdb)
+                        pdb = self._martinize2(pdb, overwrite=self.overwrite)
                     if not self.preoriented and self.mempro:
                         if self.double_span:
                             logger.debug("Attempting to orient double span protein using MemPrO...")
@@ -796,10 +875,12 @@ class PACKMOLMemgen(object):
                             self._used_tools.add("mempro")
                             self._used_tools.add("martini")
                             pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n])
-                        if self.keep_mempro:
-                            self.created_mempro.append(pdb)
-                        else:
-                            self.created.append(pdb)
+                        if self.martini and self.build_system is not None:
+                            self._finalize_martini_build()
+                    if self.keep_mempro:
+                        self.created_mempro.append(pdb)
+                    else:
+                        self.created.append(pdb)
                     if protonate:
                         logger.debug("Adding protons using pdb2pqr at pH "+str(self.pdb2pqr_pH)+"...")
                         self._used_tools.add("pdb2pqr")
@@ -1710,16 +1791,351 @@ class PACKMOLMemgen(object):
     
 
     ############## SET OF USED FUNCTIONS  #####################
+    def _finalize_martini_build(self):
+        if not self.martini_build_output:
+            logger.critical("CRITICAL:\n  Martini build output not found. Check MemPrO/Insane4MemPrO outputs.")
+            exit()
+        cg_dir = self.martini_build_output
+        src_gro = sorted(glob.glob(os.path.join(cg_dir, "*.gro")))
+        src_top = sorted(glob.glob(os.path.join(cg_dir, "*.top")))
+        src_pdb = sorted(glob.glob(os.path.join(cg_dir, "*.pdb")))
+        src_itp = sorted(glob.glob(os.path.join(cg_dir, "molecule_*.itp")))
+        if not (src_gro or src_top or src_pdb):
+            logger.critical("CRITICAL:\n  No CG outputs found in %s.", cg_dir)
+            exit()
+        base = Path(self.outfile).stem if self.outfile else "cg_system"
+        dest_dir = os.path.dirname(os.path.abspath(self.outfile)) if self.outfile else os.getcwd()
+        dest_map = {
+            ".gro": src_gro[:1],
+            ".top": src_top[:1],
+            ".pdb": src_pdb[:1],
+        }
+        written = []
+        for ext, candidates in dest_map.items():
+            if not candidates:
+                continue
+            src = candidates[0]
+            dest = os.path.join(dest_dir, base + ext)
+            if os.path.exists(dest) and not self.overwrite:
+                logger.warning("Output exists (use --overwrite to replace): %s", dest)
+                written.append(dest)
+                continue
+            shutil.copy(src, dest)
+            written.append(dest)
+        itp_in_output = sorted(glob.glob(os.path.join(dest_dir, "molecule_*.itp")))
+        if not written:
+            logger.critical("CRITICAL:\n  No CG outputs were written to %s.", dest_dir)
+            exit()
+        if src_top:
+            top_path = os.path.join(dest_dir, base + ".top")
+            fallback_top = os.path.join(dest_dir, "topol.top")
+            if not os.path.exists(top_path) and os.path.exists(fallback_top):
+                top_path = fallback_top
+            source_top = None
+            martinize_top = sorted(glob.glob(os.path.join(dest_dir, "*_topol.top")))
+            if martinize_top:
+                source_top = martinize_top[0]
+            self._postprocess_martini_topology(
+                cg_dir=cg_dir,
+                top_path=top_path,
+                itp_paths=itp_in_output,
+                source_top=source_top,
+            )
+        logger.info("Martini build complete. Using Insane4MemPrO outputs as final output:")
+        for path in written:
+            logger.info("  %s", path)
+        print("DONE!")
+        sys.exit(0)
+
+    def _auto_build_insane_args(self):
+        if not self.lipids or len(self.lipids) != 1:
+            return None
+        args = []
+        lipid_names = [l for l in self.lipids[0].split(":") if l]
+        ratio_spec = self.ratio[0] if self.ratio else ""
+        ratio_vals = [r for r in ratio_spec.split(":") if r] if ratio_spec else []
+        if ratio_vals and len(lipid_names) != len(ratio_vals):
+            return None
+        if not ratio_vals:
+            ratio_vals = ["1"] * len(lipid_names)
+        for name, ratio in zip(lipid_names, ratio_vals):
+            args.extend(["-l", f"{name}:{ratio}"])
+        if self.solvents:
+            solvent_names = [s for s in self.solvents.split(":") if s]
+            solvent_ratios = [r for r in (self.solvent_ratio or "").split(":") if r]
+            if solvent_ratios and len(solvent_names) != len(solvent_ratios):
+                return None
+            if not solvent_ratios:
+                solvent_ratios = ["1"] * len(solvent_names)
+            for name, ratio in zip(solvent_names, solvent_ratios):
+                sol_name = name
+                if name.upper() == "WAT":
+                    sol_name = "W"
+                args.extend(["-sol", f"{sol_name}:{ratio}"])
+        if self.salt:
+            def _ion_token(name):
+                return re.sub(r"[^A-Za-z]", "", name).upper()
+            neg = _ion_token(self.salt_a)
+            pos = _ion_token(self.salt_c)
+            if neg:
+                args.extend(["-negi_c0", neg])
+            if pos:
+                args.extend(["-posi_c0", pos])
+        else:
+            args.extend(["-negi_c0", "CL", "-posi_c0", "NA"])
+        return " ".join(args) if args else None
+
+    def _postprocess_martini_topology(self, cg_dir, top_path, itp_paths, source_top=None):
+        if not os.path.exists(top_path):
+            logger.warning("WARNING:\n  Topology file not found at %s; skipping postprocess.", top_path)
+            return
+        cg_top_path = None
+        if source_top and os.path.exists(source_top):
+            cg_top_path = source_top
+        else:
+            cg_top_candidates = sorted(glob.glob(os.path.join(cg_dir, "*-cg.top"))) + \
+                sorted(glob.glob(os.path.join(cg_dir, "*_cg.top")))
+            if cg_top_candidates:
+                cg_top_path = cg_top_candidates[0]
+        if not cg_top_path:
+            logger.warning(
+                "WARNING:\n  No martinize/topology source found (expected *_topol.top or *-cg.top). Skipping molecules replacement."
+            )
+            return
+        with open(cg_top_path, "r") as handle:
+            cg_lines = handle.readlines()
+        cg_mol_lines = self._extract_molecules_section(cg_lines)
+        if not cg_mol_lines:
+            logger.warning("WARNING:\n  [molecules] section not found in %s; skipping molecules replacement.", cg_top_path)
+            return
+        with open(top_path, "r") as handle:
+            top_lines = handle.readlines()
+        top_lines = self._replace_protein_in_molecules(top_lines, cg_mol_lines)
+        if itp_paths:
+            itp_names = [os.path.basename(p) for p in sorted(itp_paths)]
+            top_lines = self._replace_protein_include(top_lines, itp_names)
+        with open(top_path, "w") as handle:
+            handle.writelines(top_lines)
+
+    def _extract_molecules_section(self, lines):
+        in_section = False
+        collected = []
+        for line in lines:
+            stripped = line.strip().lower()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                if in_section:
+                    break
+                if "molecules" in stripped:
+                    in_section = True
+                continue
+            if in_section:
+                collected.append(line)
+        return collected
+
+    def _replace_protein_in_molecules(self, lines, replacement_lines):
+        in_section = False
+        replaced = False
+        output = []
+        for line in lines:
+            stripped = line.strip().lower()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_section = "molecules" in stripped
+                output.append(line)
+                continue
+            if in_section and not replaced and stripped and not stripped.startswith(";"):
+                parts = stripped.split()
+                if parts and parts[0] == "protein":
+                    output.extend(replacement_lines)
+                    replaced = True
+                    continue
+            output.append(line)
+        return output
+
+    def _replace_protein_include(self, lines, itp_names):
+        output = []
+        replaced = False
+        for line in lines:
+            if not replaced and "protein-cg" in line.lower() and line.strip().startswith("#include"):
+                for name in itp_names:
+                    output.append(f'#include "{name}"\n')
+                replaced = True
+                continue
+            output.append(line)
+        return output
+
+    def _local_output_path(self, pdb, suffix):
+        base = os.path.basename(pdb)
+        stem = base[:-4] if base.endswith(".pdb") else base
+        return os.path.join(os.getcwd(), stem + suffix)
+
+    def _insane_data_path(self, filename):
+        return os.path.join(script_path, "data", filename)
+
+    def _read_insane_list_file(self, path):
+        if not os.path.exists(path):
+            return set()
+        items = set()
+        try:
+            with open(path, "r") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    items.add(line)
+        except:
+            return set()
+        return items
+
+    def _write_insane_list_file(self, path, items, source_path):
+        try:
+            with open(path, "w") as handle:
+                handle.write("# Generated from Insane4MemPrO\n")
+                handle.write(f"# Source: {source_path}\n")
+                handle.write(f"# Count: {len(items)}\n")
+                for name in sorted(items):
+                    handle.write(name + "\n")
+        except:
+            pass
+
+    def _locate_insane_file(self):
+        env_path = os.environ.get("PATH_TO_INSANE", "").strip()
+        if env_path and os.path.exists(env_path):
+            return env_path
+        for mod_name in ("mempro", "MemPrO"):
+            spec = importlib.util.find_spec(mod_name)
+            if spec and spec.submodule_search_locations:
+                base = spec.submodule_search_locations[0]
+                candidate = os.path.join(base, "Insane4MemPrO.py")
+                if os.path.exists(candidate):
+                    return candidate
+        return None
+
+    def _load_insane_lipids(self):
+        data_path = self._insane_data_path("insane_lipids.txt")
+        cached = self._read_insane_list_file(data_path)
+        if cached:
+            return cached
+        insane_path = self._locate_insane_file()
+        if not insane_path or not os.path.exists(insane_path):
+            return set()
+        try:
+            with open(insane_path, "r") as handle:
+                content = handle.read()
+        except:
+            return set()
+        keys = set()
+        lines = content.splitlines()
+        in_block = False
+        depth = 0
+        for line in lines:
+            if not in_block:
+                if "lipidsa.update" in line and "{" in line:
+                    in_block = True
+                    depth = line.count("{") - line.count("}")
+                continue
+            depth += line.count("{") - line.count("}")
+            for match in re.findall(r"[\"']([^\"']+)[\"']\\s*:", line):
+                keys.add(match)
+            if depth <= 0:
+                in_block = False
+        keys.update(set(re.findall(r"lipidsa\\[\\s*[\"']([^\"']+)[\"']\\s*\\]", content)))
+        if keys:
+            self._write_insane_list_file(data_path, keys, insane_path)
+        return keys
+
+    def _load_insane_solvents(self):
+        data_path = self._insane_data_path("insane_solvents.txt")
+        cached = self._read_insane_list_file(data_path)
+        if cached:
+            return cached
+        insane_path = self._locate_insane_file()
+        if not insane_path or not os.path.exists(insane_path):
+            return set()
+        try:
+            with open(insane_path, "r") as handle:
+                content = handle.read()
+        except:
+            return set()
+        keys = set()
+        lines = content.splitlines()
+        in_block = False
+        depth = 0
+        for line in lines:
+            if not in_block:
+                if "solventParticles" in line and "{" in line:
+                    in_block = True
+                    depth = line.count("{") - line.count("}")
+                continue
+            depth += line.count("{") - line.count("}")
+            match = re.search(r"[\"']([^\"']+)[\"']\\s*:", line)
+            if match:
+                keys.add(match.group(1))
+            if depth <= 0:
+                in_block = False
+                break
+        for line in lines:
+            if "for s in [" in line:
+                list_content = line.split("[", 1)[1].rsplit("]", 1)[0]
+                for item in list_content.split(","):
+                    item = item.strip().strip('"').strip("'")
+                    if item:
+                        keys.add(item)
+                break
+        if keys:
+            self._write_insane_list_file(data_path, keys, insane_path)
+        return keys
+
+    def _martinize2(self, pdb, overwrite=False):
+        base = os.path.basename(pdb)
+        stem = base[:-4] if base.endswith(".pdb") else base
+        output = self._local_output_path(pdb, "_martinized.pdb")
+        topol = os.path.join(os.getcwd(), f"{stem}_topol.top")
+        if os.path.exists(output) and not overwrite:
+            logger.info("Martinize2 output exists at %s; skipping martinize2 execution.", output)
+            return output
+        martinize_cmd = shutil.which("martinize2")
+        if not martinize_cmd:
+            logger.critical("CRITICAL:\n  martinize2 not found. Install it or provide a pre-martinized input with --martinized.")
+            exit()
+        cmd = [
+            martinize_cmd,
+            "-f", pdb,
+            "-x", output,
+            "-o", topol,
+            "-ff", "martini3001",
+            "-dssp",
+            "-elastic",
+            "-scfix",
+            "-eu", "0.9",
+            "-el", "0.5", 
+            "-ea", "0", 
+            "-ep", "0", 
+            "-merge", "A",
+            "-resid", "input",
+            "-maxwarn", "99999"
+        ]
+        logger.info("Running martinize2: %s", " ".join(cmd))
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            logger.critical("CRITICAL:\n  martinize2 failed. Check its output and inputs.")
+            exit()
+        self._used_tools.add("martini")
+        return output
+
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="in"):
-        output = pdb[:-4]+n_ter+"_MEMPRO.pdb"
+        output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
         tmp_folder = os.path.abspath(tmp_prefix+pdb_base[:-4]+n_ter+"_MEMPRO")
         out_dir = tmp_folder + os.path.sep
         info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
+        cg_dir = os.path.join(tmp_folder, "Rank_1", "CG_System_rank_1")
         if os.path.exists(output) and not overwrite:
             logger.info("MemPrO output exists at %s; skipping MemPrO execution.", output)
             self._apply_mempro_curvature(info_path)
+            if self.martini and self.build_system is not None:
+                self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
+                self._finalize_martini_build()
             if double_span:
                 if not os.path.exists(info_path):
                     logger.warning(
@@ -1772,6 +2188,25 @@ class PACKMOLMemgen(object):
                             break
                 if insane_path:
                     os.environ["PATH_TO_INSANE"] = insane_path
+            if self.build_system is not None and not self.martini:
+                logger.critical("CRITICAL:\n  --insane_build_ranks requires --martini.")
+                exit()
+            if self.build_arguments and not self.martini:
+                logger.critical("CRITICAL:\n  --insane_args requires --martini.")
+                exit()
+            if self.martini and self.build_system is None:
+                self.build_system = 1
+            if self.martini and self.build_system is not None and not (self.build_arguments and self.build_arguments.strip()):
+                auto_args = self._auto_build_insane_args()
+                if auto_args:
+                    logger.info("Auto-constructed --insane_args: %s", auto_args)
+                    self.build_arguments = auto_args
+                else:
+                    logger.critical("CRITICAL:\n  -bd_args must be supplied when using -bd.")
+                    exit()
+            if self.martini and ("PATH_TO_INSANE" not in os.environ or not os.environ["PATH_TO_INSANE"].strip()):
+                logger.critical("CRITICAL:\n  PATH_TO_INSANE is required for MemPrO --martini. Set the env var or install Insane4MemPrO.")
+                exit()
             if not self.mempro:
                 logger.critical("CRITICAL:\n  MemPrO executable not found. Use --mempro to point to MemPrO.")
                 exit()
@@ -1782,6 +2217,13 @@ class PACKMOLMemgen(object):
             else:
                 cmd = [self.mempro]
             cmd += ["-f", pdb, "-o", out_dir, "-ng", str(self.mempro_grid), "-ni", str(self.mempro_iters), "-rank", self.mempro_rank]
+            mempro_arg_str = self.mempro_args or ""
+            if "-mt" not in mempro_arg_str and "--membrane_thickness" not in mempro_arg_str:
+                cmd += ["-mt", str(self.leaflet)]
+            if self.martini and self.build_system is not None:
+                cmd += ["-bd", str(self.build_system)]
+                if self.build_arguments:
+                    cmd += ["-bd_args", self.build_arguments]
             if double_span:
                 cmd.append("-dm")
             if self.mempro_curvature:
@@ -1809,6 +2251,8 @@ class PACKMOLMemgen(object):
                     cleaned.append(line)
             with open(output, "w") as f:
                 f.writelines(cleaned)
+            if self.martini and self.build_system is not None:
+                self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
         self._apply_mempro_curvature(info_path)
         if double_span:
             if not os.path.exists(info_path):
