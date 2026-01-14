@@ -364,7 +364,10 @@ class PACKMOLMemgen(object):
             exit()
     
         ############ ARGPARSE ARGUMENTS ###################
-    
+
+        if self.martini:
+            self._warn_martini_unsupported()
+
         if self.curv_radius is not None:
             self.curvature = 1/self.curv_radius
     
@@ -1848,18 +1851,76 @@ class PACKMOLMemgen(object):
         sys.exit(0)
 
     def _auto_build_insane_args(self):
-        if not self.lipids or len(self.lipids) != 1:
+        if not self.lipids or len(self.lipids) > 2:
             return None
+        if self.martini and self.solvents:
+            insane_solvents = self._load_insane_solvents()
+            if insane_solvents:
+                insane_solvents = {s.upper() for s in insane_solvents}
+                missing = []
+                for solvent in self.solvents.split(":"):
+                    token = solvent.strip()
+                    if token.upper() == "WAT":
+                        continue
+                    if token and token.upper() not in insane_solvents:
+                        missing.append(token)
+                if missing:
+                    logger.critical(
+                        "CRITICAL:\n  Martini solvents not found in Insane4MemPrO solventParticles: %s",
+                        ", ".join(sorted(set(missing))),
+                    )
+                    exit()
+            else:
+                logger.warning(
+                    "WARNING:\n  Insane4MemPrO solvents list not available; skipping Martini solvent validation."
+                )
         args = []
-        lipid_names = [l for l in self.lipids[0].split(":") if l]
-        ratio_spec = self.ratio[0] if self.ratio else ""
-        ratio_vals = [r for r in ratio_spec.split(":") if r] if ratio_spec else []
-        if ratio_vals and len(lipid_names) != len(ratio_vals):
-            return None
-        if not ratio_vals:
-            ratio_vals = ["1"] * len(lipid_names)
-        for name, ratio in zip(lipid_names, ratio_vals):
-            args.extend(["-l", f"{name}:{ratio}"])
+        ratio_list = []
+        if self.ratio:
+            ratio_list = list(self.ratio)
+            if len(ratio_list) != len(self.lipids):
+                return None
+        else:
+            ratio_list = [""] * len(self.lipids)
+        for index, (lipid_spec, ratio_spec) in enumerate(zip(self.lipids, ratio_list)):
+            if "//" in lipid_spec:
+                if ratio_spec and "//" not in ratio_spec:
+                    return None
+                lipid_parts = lipid_spec.split("//")
+                if len(lipid_parts) != 2:
+                    return None
+                ratio_parts = ratio_spec.split("//") if ratio_spec else ["", ""]
+                if ratio_spec and len(ratio_parts) != 2:
+                    return None
+                lower = self._parse_insane_lipid_args(lipid_parts[0], ratio_parts[0])
+                upper = self._parse_insane_lipid_args(lipid_parts[1], ratio_parts[1])
+                if lower is None or upper is None:
+                    return None
+            else:
+                if "//" in ratio_spec:
+                    return None
+                lower = self._parse_insane_lipid_args(lipid_spec, ratio_spec)
+                upper = None
+                if lower is None:
+                    return None
+            if index == 0:
+                lower_flag = "-l"
+                upper_flag = "-u"
+            else:
+                lower_flag = "-lo"
+                upper_flag = "-uo"
+            for name, ratio in lower:
+                args.extend([lower_flag, f"{name}:{ratio}"])
+            if upper is not None:
+                for name, ratio in upper:
+                    args.extend([upper_flag, f"{name}:{ratio}"])
+        if self.dims and self.dims != [0, 0, 0]:
+            dims_nm = [value / 10.0 for value in self.dims]
+            args.extend(["-x", str(dims_nm[0]), "-y", str(dims_nm[1]), "-z", str(dims_nm[2])])
+        if self.curvature is not None and abs(self.curvature) > 0:
+            curv_abs = abs(self.curvature)
+            curv_dir = 1 if self.curvature >= 0 else -1
+            args.extend(["-curv", f"{curv_abs},0,{curv_dir}"])
         if self.solvents:
             solvent_names = [s for s in self.solvents.split(":") if s]
             solvent_ratios = [r for r in (self.solvent_ratio or "").split(":") if r]
@@ -1867,9 +1928,15 @@ class PACKMOLMemgen(object):
                 return None
             if not solvent_ratios:
                 solvent_ratios = ["1"] * len(solvent_names)
+            warned_wat = False
             for name, ratio in zip(solvent_names, solvent_ratios):
                 sol_name = name
                 if name.upper() == "WAT":
+                    if not warned_wat:
+                        logger.warning(
+                            "WARNING:\n  Martini solvent WAT mapped to Insane solvent W."
+                        )
+                        warned_wat = True
                     sol_name = "W"
                 args.extend(["-sol", f"{sol_name}:{ratio}"])
         if self.salt:
@@ -1878,12 +1945,41 @@ class PACKMOLMemgen(object):
             neg = _ion_token(self.salt_a)
             pos = _ion_token(self.salt_c)
             if neg:
-                args.extend(["-negi_c0", neg])
+                args.extend(["-negi_c0", neg, "-negi_c1", neg, "-negi_c2", neg])
             if pos:
-                args.extend(["-posi_c0", pos])
+                args.extend(["-posi_c0", pos, "-posi_c1", pos, "-posi_c2", pos])
+            conc = f"{self.saltcon},{self.saltcon},{self.saltcon}"
+            args.extend(["-ion_conc", conc])
         else:
-            args.extend(["-negi_c0", "CL", "-posi_c0", "NA"])
+            args.extend([
+                "-negi_c0", "CL", "-negi_c1", "CL", "-negi_c2", "CL",
+                "-posi_c0", "NA", "-posi_c1", "NA", "-posi_c2", "NA",
+            ])
         return " ".join(args) if args else None
+
+    def _parse_insane_lipid_args(self, lipid_spec, ratio_spec):
+        lipid_names = [l for l in lipid_spec.split(":") if l]
+        ratio_vals = [r for r in ratio_spec.split(":") if r] if ratio_spec else []
+        if ratio_vals and len(lipid_names) != len(ratio_vals):
+            return None
+        if not ratio_vals:
+            ratio_vals = ["1"] * len(lipid_names)
+        return list(zip(lipid_names, ratio_vals))
+
+    def _warn_martini_unsupported(self):
+        def warn(flag, message):
+            if flag:
+                logger.warning("WARNING:\n  %s", message)
+        warn(self.distxy_fix is not None, "--distxy_fix is not supported for Martini Insane builds; ignoring.")
+        warn("--dist" in sys.argv, "--dist is not supported for Martini Insane builds; ignoring.")
+        warn("--dist_wat" in sys.argv, "--dist_wat is not supported for Martini Insane builds; ignoring.")
+        warn(self.xygauss is not None, "--xygauss is not supported for Martini Insane builds; ignoring.")
+        warn(self.apl_offset is not None, "--apl_offset is not supported for Martini Insane builds; ignoring.")
+        warn("--lip_offset" in sys.argv, "--lip_offset is not supported for Martini Insane builds; ignoring.")
+        warn(self.pbc, "--pbc is not supported for Martini Insane builds; ignoring.")
+        warn(self.nocounter, "--nocounter is not supported for Martini Insane builds; ignoring.")
+        warn(self.charge_imbalance != 0, "--charge_imbalance is not supported for Martini Insane builds; ignoring.")
+        warn("--imbalance_ion" in sys.argv, "--imbalance_ion is not supported for Martini Insane builds; ignoring.")
 
     def _postprocess_martini_topology(self, cg_dir, top_path, itp_paths, source_top=None):
         if not os.path.exists(top_path):

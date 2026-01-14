@@ -27,6 +27,34 @@ preserved below; this section summarizes the changes and current behavior.
 
 - Protonation: protonation uses pdb2pqr when needed.
 
+###############################
+Martini Auto-Mapping (MemPrO/Insane4MemPrO)
+###############################
+
+When ``--martini`` is enabled, the script can auto-build ``--insane_args`` for
+MemPrO/Insane4MemPrO with the following behavior:
+
+- Lipids: ``--lipids`` + ``--ratio`` map to Insane ``-l/-u``. ``//`` syntax is
+  supported for lower/upper leaflets. Two ``--lipids`` entries are supported and
+  map to Insane ``-l/-u`` (inner membrane) and ``-lo/-uo`` (outer membrane).
+- Box size: ``--dims`` is converted from Angstrom to nm and passed as ``-x/-y/-z``.
+- Curvature: ``--curvature`` or ``--curv_radius`` maps to ``-curv c0,0,dir``
+  where ``c0 = abs(curvature)``, ``dir = sign(curvature)``.
+- Solvents: ``--solvents`` + ``--solvent_ratio`` map to ``-sol`` entries. The
+  only automatic name mapping is ``WAT -> W``, which emits a warning once. All
+  other solvent names must match Insane solventParticles (see
+  ``packmol_memgen/data/insane_solvents.txt``).
+- Salts: ``--salt``, ``--salt_c``, ``--salt_a`` map to ``-posi_c0/1/2`` and
+  ``-negi_c0/1/2`` using ion tokens stripped to letters (e.g. ``Na+`` -> ``NA``).
+  ``--saltcon`` maps to ``-ion_conc`` with the value replicated for all three
+  compartments.
+
+The following options are *not* supported in Martini auto-mapping and will emit
+warnings: ``--distxy_fix``, ``--dist``, ``--dist_wat``, ``--xygauss``,
+``--apl_offset``, ``--lip_offset``, ``--pbc``, ``--nocounter``,
+``--charge_imbalance``, ``--imbalance_ion``. You can still supply custom
+``--insane_args`` to override or extend the auto-generated arguments.
+
 ############
 Installation
 ############
