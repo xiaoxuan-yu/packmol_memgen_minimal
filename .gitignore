@@ -11,3 +11,6 @@ ENV/
 
 # version file
 packmol_memgen/__version__.py
+
+# log
+packmol-memgen.log
