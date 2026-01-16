@@ -639,12 +639,6 @@ class PACKMOLMemgen(object):
     
         if lipids is None:
             lipids = ["DOPC"]
-        if self.martini and any("//" in lipid for lipid in lipids):
-            logger.error("ERROR:\n    --martini does not support '//' leaflet syntax in --lipids.")
-            exit()
-        if self.martini and self.ratio and any("//" in ratio for ratio in self.ratio):
-            logger.error("ERROR:\n    --martini does not support '//' leaflet syntax in --ratio.")
-            exit()
         if self.double and len(lipids) == 1:
             lipids = lipids+["//".join(reversed(lipids[0].split("//")))]
         elif self.double and len(lipids) != 1:
