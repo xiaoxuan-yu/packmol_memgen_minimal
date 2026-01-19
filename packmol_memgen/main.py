@@ -2214,6 +2214,9 @@ class PACKMOLMemgen(object):
 
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="in"):
         output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
+        lig_output = output.replace("_MEMPRO.pdb", "_MEMPRO_ligs.pdb")
+        if lig_output == output:
+            lig_output = output[:-4] + "_ligs.pdb" if output.lower().endswith(".pdb") else output + "_ligs.pdb"
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
         tmp_folder = os.path.abspath(tmp_prefix+pdb_base[:-4]+n_ter+"_MEMPRO")
@@ -2226,6 +2229,12 @@ class PACKMOLMemgen(object):
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
                 self._finalize_martini_build()
+            if keepligs:
+                if verbose:
+                    logger.info("Superimposing to keep ligands")
+                if overwrite or not os.path.exists(lig_output):
+                    rmsd_of_pdbs(pdb, output, transform_pdb1=lig_output, standard=True)
+                output = lig_output
             if double_span:
                 if not os.path.exists(info_path):
                     logger.warning(
@@ -2341,6 +2350,12 @@ class PACKMOLMemgen(object):
                     cleaned.append(line)
             with open(output, "w") as f:
                 f.writelines(cleaned)
+            if keepligs:
+                if verbose:
+                    logger.info("Superimposing to keep ligands")
+                if overwrite or not os.path.exists(lig_output):
+                    rmsd_of_pdbs(pdb, output, transform_pdb1=lig_output, standard=True)
+                output = lig_output
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
         self._apply_mempro_curvature(info_path)
