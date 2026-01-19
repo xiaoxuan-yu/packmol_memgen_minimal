@@ -27,9 +27,9 @@ preserved below; this section summarizes the changes and current behavior.
 
 - Protonation: protonation uses pdb2pqr when needed.
 
-###############################
+###########################################
 Martini Auto-Mapping (MemPrO/Insane4MemPrO)
-###############################
+###########################################
 
 When ``--martini`` is enabled, the script can auto-build ``--insane_args`` for
 MemPrO/Insane4MemPrO with the following behavior:
