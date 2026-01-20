@@ -647,9 +647,11 @@ class PACKMOLMemgen(object):
             if "--tolerance" not in sys.argv:
                 self.tolerance = 3
     
+        martini_skip_solvent_params = False
         for solvent in self.solvents.split(":"):
             if solvent not in self.sparameters:
                 if solvent and self.martini:
+                    martini_skip_solvent_params = True
                     insane_solvents = {s.upper() for s in self._load_insane_solvents()}
                     if insane_solvents:
                         if solvent not in insane_solvents:
@@ -668,8 +670,23 @@ class PACKMOLMemgen(object):
             
     
         solvent_ratios = [float(ratio) for ratio in self.solvent_ratio.split(":")]
-        solvent_density = sum([float(self.sparameters[solvent]["density"])*solvent_ratios[i] for i, solvent in enumerate(self.solvents.split(":"))])/sum(solvent_ratios)
-        solvent_con     = sum([(solvent_ratios[i]*float(self.sparameters[solvent]["density"])*avogadro)/(float(self.sparameters[solvent]["MW"])*10**24) for i, solvent in enumerate(self.solvents.split(":"))])/sum(solvent_ratios)
+        if self.martini and martini_skip_solvent_params:
+            solvent_density = None
+            solvent_con = None
+        else:
+            solvent_density = sum(
+                [
+                    float(self.sparameters[solvent]["density"]) * solvent_ratios[i]
+                    for i, solvent in enumerate(self.solvents.split(":"))
+                ]
+            ) / sum(solvent_ratios)
+            solvent_con = sum(
+                [
+                    (solvent_ratios[i] * float(self.sparameters[solvent]["density"]) * avogadro)
+                    / (float(self.sparameters[solvent]["MW"]) * 10**24)
+                    for i, solvent in enumerate(self.solvents.split(":"))
+                ]
+            ) / sum(solvent_ratios)
     
         if lipids is None:
             lipids = ["DOPC"]
@@ -1490,6 +1507,12 @@ class PACKMOLMemgen(object):
                     solvent_vol_up   = solvent_vol_up+lipid_vol_up
                     solvent_vol_down = solvent_vol_down+lipid_vol_down
                 solvent_vol_tot = solvent_vol_up+solvent_vol_down
+                if solvent_con is None:
+                    logger.critical(
+                        "CRITICAL:\n  Martini mode enabled with CG solvent particles; solvent packing via PACKMOL requires solvent density/MW parameters.\n"
+                        "  Use Insane4MemPrO (recommended for --martini) or choose an atomistic solvent from --available_solvents."
+                    )
+                    exit()
                 watnum_up = int(solvent_vol_up*solvent_con)
                 watnum_down = int(solvent_vol_down*solvent_con)
     
