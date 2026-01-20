@@ -499,6 +499,7 @@ class PACKMOLMemgen(object):
             self.ion_dict = amber_ion_dict 
         if self.martini:
             insane_solvents = {s.upper() for s in self._load_insane_solvents()}
+            self.ion_dict = {"NA": ("NA", 1, "NA"), "CL": ("CL", -1, "CL"), "CA": ("CA", 2, "CA")}
             if insane_solvents:
                 def _ion_token(name):
                     return re.sub(r"[^A-Za-z]", "", name).upper()
