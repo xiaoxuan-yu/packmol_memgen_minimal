@@ -26,6 +26,7 @@ preserved below; this section summarizes the changes and current behavior.
   package but can be installed via an optional dependency for convenience.
 
 - Protonation: protonation uses pdb2pqr when needed.
+- Output location: use ``--outdir DIR`` to write all generated files (final ``--output``, ``--log``, ``--packlog`` scripts/logs, intermediate structures) into a single directory.
 
 ###########################################
 Martini Auto-Mapping (MemPrO/Insane4MemPrO)

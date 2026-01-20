@@ -120,6 +120,7 @@ parser.add_argument("--solvent_parm", type=str,                   help=argparse.
 parser.add_argument("--overwrite",    action="store_true",        help=argparse.SUPPRESS if short_help else "overwrite, even if files are present")
 parser.add_argument("--log",type=str,default="packmol-memgen.log",help=argparse.SUPPRESS if short_help else "log file name where detailed information is to be written")
 parser.add_argument("-o","--output",type=str,                     help=argparse.SUPPRESS if short_help else "name of the PACKMOL generated PDB file")
+parser.add_argument("--outdir",type=str,default=".",              help=argparse.SUPPRESS if short_help else "output directory for all generated files (logs, packmol scripts, intermediate structures, final output)")
 parser.add_argument("--charmm",     action="store_true",          help=argparse.SUPPRESS if short_help else "the output will be in CHARMM format instead of AMBER. Works only for small subset of lipids (see --available_lipids)")
 parser.add_argument("--translate", nargs=3, type=float, default=[0,0,0], help=argparse.SUPPRESS if short_help else "pass a vector as  x y z  to translate the oriented pdb. Ex. ' 0 0 4 '")
 parser.add_argument("--sirah", action="store_true",               help=argparse.SUPPRESS if short_help else "use SIRAH lipids, and corase-grain protein input. Will adapt tolerance accordingly. Only small subset of lipids available!")
@@ -201,8 +202,17 @@ class PACKMOLMemgen(object):
         #Get args in self 
         for key, value in args.__dict__.items():
             setattr(self, key, value)
+        self.outdir = os.path.abspath(getattr(self, "outdir", ".") or ".")
         self._used_tools = {"packmol-memgen"}
         self.martini_build_output = None
+
+    def _out_path(self, *parts):
+        return os.path.join(self.outdir, *parts)
+
+    def _packmol_path(self, path):
+        if any(c.isspace() for c in path):
+            return f"\"{path}\""
+        return path
 
     def prepare(self):
  
@@ -211,6 +221,7 @@ class PACKMOLMemgen(object):
         else:
             print("--verbose for details of the packing process", file=sys.stderr)
         logger.debug("Execution line:     "+" ".join(sys.argv))
+        os.makedirs(self.outdir, exist_ok=True)
     
     
         #Path to local Packmol installation (http://www.ime.unicamp.br/~martinez/packmol/home.shtml)
@@ -430,11 +441,18 @@ class PACKMOLMemgen(object):
         self.outfile = self.output
         if self.outfile is not None:
             if not self.outfile.endswith(".pdb"):
-                self.outfile = self.outfile+".pdb"
+                self.outfile = self.outfile + ".pdb"
+            if not os.path.isabs(self.outfile):
+                self.outfile = self._out_path(self.outfile)
         if not self.output and self.pdb is None:
-            self.outfile = pdb_prefix+"_only.pdb"
+            self.outfile = self._out_path(pdb_prefix + "_only.pdb")
         elif not self.output:
-            self.outfile = pdb_prefix+"_"+"".join([os.path.basename(pdb)[:-4] for pdb in self.pdb])+".pdb"
+            self.outfile = self._out_path(
+                pdb_prefix + "_" + "".join([os.path.basename(pdb)[:-4] for pdb in self.pdb]) + ".pdb"
+            )
+
+        if getattr(self, "packlog", None) and not os.path.isabs(self.packlog):
+            self.packlog = self._out_path(self.packlog)
     
         if lipids is not None:
             if self.martini:
@@ -808,7 +826,7 @@ class PACKMOLMemgen(object):
         content_header = content_prot = content_lipid = content_solvent = content_ion = content_solute = ""
         content_header += "tolerance "+str(self.tolerance)+"\n"
         content_header += "filetype pdb\n"
-        content_header += "output "+self.outfile+"\n\n"
+        content_header += "output " + self._packmol_path(self.outfile) + "\n\n"
         if self.writeout is not None:
             content_header += "writeout "+self.writeout+"\n"
         if self.traj:
@@ -881,7 +899,9 @@ class PACKMOLMemgen(object):
                     if protonate:
                         logger.debug("Adding protons using pdb2pqr at pH "+str(self.pdb2pqr_pH)+"...")
                         self._used_tools.add("pdb2pqr")
-                        pdb =  pdb2pqr_protonate(pdb,overwrite=self.overwrite,pH=self.pdb2pqr_pH)
+                        pdb = pdb2pqr_protonate(
+                            pdb, overwrite=self.overwrite, pH=self.pdb2pqr_pH, output_dir=self.outdir
+                        )
                         self.created.append(pdb)                 
                     elif self.preoriented and self.double_span:
                         ds_oriented = pdb_parse(pdb, onlybb=False)
@@ -896,8 +916,9 @@ class PACKMOLMemgen(object):
                         del ds_oriented[('MEM', 1, 'X')]
                         del ds_oriented[('MEM', 2, 'X')]
     
-                        pdb_write(ds_oriented, outfile="ds_temp.pdb")
-                        pdb = pdb_ds = "ds_temp.pdb"
+                        ds_temp = self._out_path("ds_temp.pdb")
+                        pdb_write(ds_oriented, outfile=ds_temp)
+                        pdb = pdb_ds = ds_temp
     
                         z_offset_ds = z_dist
     
@@ -910,13 +931,35 @@ class PACKMOLMemgen(object):
                         grid = (None,None)
     
                     ############## FAST VALUE ESTIMATION FROM PDB #####################
-                    mem_params = MembraneParams(pdb,leaflet_z,grid[0],move=True, move_vec=self.translate, xy_cen=self.noxy_cen, z_cen=z_cen, outpdb="PROT"+str(n)+".pdb",chain=chain_index[chain_nr],renumber=True)
+                    mem_params = MembraneParams(
+                        pdb,
+                        leaflet_z,
+                        grid[0],
+                        move=True,
+                        move_vec=self.translate,
+                        xy_cen=self.noxy_cen,
+                        z_cen=z_cen,
+                        outpdb=self._out_path("PROT" + str(n) + ".pdb"),
+                        chain=chain_index[chain_nr],
+                        renumber=True,
+                    )
                     minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                     chain_nr += chains
                     charge_prot += self.charge_pdb_delta[n]
                     charges.append(charge_prot)
                     if self.double:
-                        mem_params = MembraneParams(pdb,leaflet_z,grid[0],move=True, move_vec=self.translate, xy_cen=self.noxy_cen, z_cen=z_cen, outpdb="PROT"+str(n+1)+".pdb",chain=chain_index[chain_nr],renumber=True)
+                        mem_params = MembraneParams(
+                            pdb,
+                            leaflet_z,
+                            grid[0],
+                            move=True,
+                            move_vec=self.translate,
+                            xy_cen=self.noxy_cen,
+                            z_cen=z_cen,
+                            outpdb=self._out_path("PROT" + str(n + 1) + ".pdb"),
+                            chain=chain_index[chain_nr],
+                            renumber=True,
+                        )
                         minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                         chain_nr += chains
                         charge_prot += self.charge_pdb_delta[n]
@@ -925,7 +968,18 @@ class PACKMOLMemgen(object):
     
                 elif pdb == "None" and self.double_span:
                     logger.debug("Estimating for second mem!")
-                    mem_params = MembraneParams(pdb_ds,leaflet_z,grid[0],move=True, move_vec=[0,0,-z_offset_ds], xy_cen=self.noxy_cen, z_cen=z_cen, outpdb="PROT"+str(n)+".pdb",chain=chain_index[chain_nr],renumber=True)
+                    mem_params = MembraneParams(
+                        pdb_ds,
+                        leaflet_z,
+                        grid[0],
+                        move=True,
+                        move_vec=[0, 0, -z_offset_ds],
+                        xy_cen=self.noxy_cen,
+                        z_cen=z_cen,
+                        outpdb=self._out_path("PROT" + str(n) + ".pdb"),
+                        chain=chain_index[chain_nr],
+                        renumber=True,
+                    )
                     minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                 else:
                     if not self.verbose:
@@ -1173,15 +1227,17 @@ class PACKMOLMemgen(object):
     
                 if not self.onlymembrane:
                     if self.pdb[bilayer] != "None":
-                        self.created_notrun.append("PROT"+str(bilayer)+".pdb")
+                        prot_path = self._out_path("PROT" + str(bilayer) + ".pdb")
+                        self.created_notrun.append(prot_path)
                         if self.sirah:
-                            self.created_notrun.append("PROT"+str(bilayer)+"_cg.pdb")
-                            content_prot += "structure PROT"+str(bilayer)+"_cg.pdb\n"
+                            prot_cg_path = self._out_path("PROT" + str(bilayer) + "_cg.pdb")
+                            self.created_notrun.append(prot_cg_path)
+                            content_prot += "structure " + self._packmol_path(prot_cg_path) + "\n"
                         else:
-                            content_prot += "structure PROT"+str(bilayer)+".pdb\n"
+                            content_prot += "structure " + self._packmol_path(prot_path) + "\n"
                         content_prot += "  number 1\n"
-                        content_prot += "  fixed 0. 0. "+str(z_offset)+" 0. 0. 0.\n"
-                        content_prot += "  radius "+str(self.prot_rad)+"\n"
+                        content_prot += "  fixed 0. 0. " + str(z_offset) + " 0. 0. 0.\n"
+                        content_prot += "  radius " + str(self.prot_rad) + "\n"
                         content_prot += "end structure\n\n"
     
                 ################################ LIPIDS ######################################
@@ -1312,18 +1368,19 @@ class PACKMOLMemgen(object):
                                 if bound_tail <=0:
                                     logger.error("ERROR:\n    The boundary for "+lipid+" tail is out of the space delimited for the membrane by the membrane center at the z axis origin (it must be a positive value greater than 0). Please consider increasing the value!")
                                     exit()
-                            if not os.path.isfile("./"+lipid+".pdb"):
+                            lipid_pdb = self._out_path(lipid + ".pdb")
+                            if not os.path.isfile(lipid_pdb):
                                 try:
-                                    shutil.copy(script_path+rep+"/pdbs/"+lipid+".pdb", "./")
+                                    shutil.copy(script_path + rep + "/pdbs/" + lipid + ".pdb", lipid_pdb)
                                 except:
-                                    pdbtar.extract(lipid+".pdb")
-                                self.created_notrun.append(lipid+".pdb")
+                                    pdbtar.extract(lipid + ".pdb", path=self.outdir)
+                                self.created_notrun.append(lipid_pdb)
     
-                            content_lipid += "structure "+lipid+".pdb\n"
-                            sp = 0 
+                            content_lipid += "structure " + self._packmol_path(lipid_pdb) + "\n"
+                            sp = 0
                             if lipid in sterols_PI or "PI" in lipid: ## Avoid ring piercing by lipid tails, adding extra radius. Later remove those piercing despite this (find_piercing_lipids). Add inositol rings as well!
                                 if "PI" in lipid:
-                                    _pdb = pdb_parse_TER(lipid+".pdb", onlybb=False)
+                                    _pdb = pdb_parse_TER(lipid_pdb, onlybb=False)
                                     _atom_string = " ".join([ str(_a[3]) for _a in _pdb[list(_pdb.keys())[0]].keys() if _a[0] == "PI" and _a[2] in PI_ring_probe])
                                     content_lipid += f"  atoms {_atom_string}\n"
                                     content_lipid +=  "    radius 1.5\n"
@@ -1390,17 +1447,18 @@ class PACKMOLMemgen(object):
                 ######################## WATER && SOLUTE #####################################
     
                 for solvent in self.solvents.split(":"):
-                    solvent_pdb = solvent+".pdb"
-                    if os.path.isfile(solvent_pdb):
-                        logger.info("Using "+solvent_pdb+" in the folder")
+                    solvent_pdb = solvent + ".pdb"
+                    solvent_path = self._out_path(solvent_pdb)
+                    if os.path.isfile(solvent_path):
+                        logger.info("Using " + solvent_path + " in the folder")
                     else:
                         try:
-                            shutil.copy(os.path.join(script_path, rep, "pdbs", solvent_pdb), "./")
+                            shutil.copy(os.path.join(script_path, rep, "pdbs", solvent_pdb), solvent_path)
                         except:
-                            pdbtar.extract(solvent_pdb)
-                        self.created_notrun.append(solvent_pdb)
-                    if not os.path.isfile(solvent_pdb):
-                        logger.critical("CRITICAL:"+solvent_pdb+" is not to found in the folder!")
+                            pdbtar.extract(solvent_pdb, path=self.outdir)
+                        self.created_notrun.append(solvent_path)
+                    if not os.path.isfile(solvent_path):
+                        logger.critical("CRITICAL:" + solvent_path + " is not to found in the folder!")
                         exit()
     
                 if self.curvature is not None:
@@ -1591,19 +1649,21 @@ class PACKMOLMemgen(object):
                 #    new_con_neg = (neg_up+neg_down)/(((solvent_vol_tot)*avogadro/(1*10**27)))
                 #    new_con_pos = (pos_up+pos_down)/(((solvent_vol_tot)*avogadro/(1*10**27)))
     
+                cation_path = self._out_path(cation + ".pdb")
+                anion_path = self._out_path(anion + ".pdb")
                 try:
-                    shutil.copy(os.path.join(script_path, rep, "pdbs", cation+".pdb"), "./")
+                    shutil.copy(os.path.join(script_path, rep, "pdbs", cation + ".pdb"), cation_path)
                 except:
-                    pdbtar.extract(cation+".pdb")
-                self.created_notrun.append(cation+".pdb")
+                    pdbtar.extract(cation + ".pdb", path=self.outdir)
+                self.created_notrun.append(cation_path)
                 try:
-                    shutil.copy(os.path.join(script_path, rep, "pdbs", anion+".pdb"), "./")
+                    shutil.copy(os.path.join(script_path, rep, "pdbs", anion + ".pdb"), anion_path)
                 except:
-                    pdbtar.extract(anion+".pdb")
-                self.created_notrun.append(anion+".pdb")
+                    pdbtar.extract(anion + ".pdb", path=self.outdir)
+                self.created_notrun.append(anion_path)
                 if not self.solvate and not self.self_assembly:
                     if pos_down > 0:
-                        content_ion += "structure "+cation+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(pos_down))+"\n"
                         if self.curvature is not None:
@@ -1623,7 +1683,7 @@ class PACKMOLMemgen(object):
                                 content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
                         content_ion += "end structure\n\n"
                     if pos_up > 0:
-                        content_ion += "structure "+cation+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(pos_up))+"\n"
                         if self.curvature is not None:
@@ -1643,7 +1703,7 @@ class PACKMOLMemgen(object):
                                 content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(leaflet_z+z_offset)+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
                         content_ion += "end structure\n\n"
                     if neg_down > 0:
-                        content_ion += "structure "+anion+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(neg_down))+"\n"
                         if self.curvature is not None:
@@ -1663,7 +1723,7 @@ class PACKMOLMemgen(object):
                                 content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
                         content_ion += "end structure\n\n"
                     if neg_up > 0:
-                        content_ion += "structure "+anion+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(neg_up))+"\n"
                         if self.curvature is not None:
@@ -1684,14 +1744,14 @@ class PACKMOLMemgen(object):
                         content_ion += "end structure\n\n"
                 else:
                     if pos_down+pos_up > 0:
-                        content_ion += "structure "+cation+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(pos_down+pos_up))+"\n"
                         if not self.pbc:
                             content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
                         content_ion += "end structure\n\n"
                     if neg_down+neg_up > 0:
-                        content_ion += "structure "+anion+".pdb\n"
+                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
                         content_ion += "  nloop "+str(self.nloop)+"\n"
                         content_ion += "  number "+str(int(neg_down+neg_up))+"\n"
                         if not self.pbc:
@@ -1699,11 +1759,22 @@ class PACKMOLMemgen(object):
                         content_ion += "end structure\n\n"
     
                 for i, solvent in enumerate(self.solvents.split(":")):
-                    solvent_pdb   = solvent+".pdb"
-                    solvents_up   = int((watnum_up/solvent_con)*(solvent_ratios[i]/float(sum(solvent_ratios)))*(avogadro/(1*10**24))*(float(self.sparameters[solvent]["density"])/float(self.sparameters[solvent]["MW"])))
-                    solvents_down = int((watnum_down/solvent_con)*(solvent_ratios[i]/float(sum(solvent_ratios)))*(avogadro/(1*10**24))*(float(self.sparameters[solvent]["density"])/float(self.sparameters[solvent]["MW"])))
+                    solvent_pdb = solvent + ".pdb"
+                    solvent_path = self._out_path(solvent_pdb)
+                    solvents_up = int(
+                        (watnum_up/solvent_con)
+                        * (solvent_ratios[i]/float(sum(solvent_ratios)))
+                        * (avogadro/(1*10**24))
+                        * (float(self.sparameters[solvent]["density"])/float(self.sparameters[solvent]["MW"]))
+                    )
+                    solvents_down = int(
+                        (watnum_down/solvent_con)
+                        * (solvent_ratios[i]/float(sum(solvent_ratios)))
+                        * (avogadro/(1*10**24))
+                        * (float(self.sparameters[solvent]["density"])/float(self.sparameters[solvent]["MW"]))
+                    )
 
-                    content_solvent_header = "structure "+solvent_pdb+"\n"
+                    content_solvent_header = "structure " + self._packmol_path(solvent_path) + "\n"
                     if self.sirah:
                         content_solvent_header += "  atoms 5\n"
                         content_solvent_header += "    radius 2.5\n"
@@ -1801,7 +1872,7 @@ class PACKMOLMemgen(object):
             logger.critical("CRITICAL:\n  No CG outputs found in %s.", cg_dir)
             exit()
         base = Path(self.outfile).stem if self.outfile else "cg_system"
-        dest_dir = os.path.dirname(os.path.abspath(self.outfile)) if self.outfile else os.getcwd()
+        dest_dir = os.path.dirname(os.path.abspath(self.outfile)) if self.outfile else self.outdir
         dest_map = {
             ".gro": src_gro[:1],
             ".top": src_top[:1],
@@ -2056,7 +2127,7 @@ class PACKMOLMemgen(object):
     def _local_output_path(self, pdb, suffix):
         base = os.path.basename(pdb)
         stem = base[:-4] if base.endswith(".pdb") else base
-        return os.path.join(os.getcwd(), stem + suffix)
+        return self._out_path(stem + suffix)
 
     def _insane_data_path(self, filename):
         return os.path.join(script_path, "data", filename)
@@ -2179,7 +2250,7 @@ class PACKMOLMemgen(object):
         base = os.path.basename(pdb)
         stem = base[:-4] if base.endswith(".pdb") else base
         output = self._local_output_path(pdb, "_martinized.pdb")
-        topol = os.path.join(os.getcwd(), f"{stem}_topol.top")
+        topol = self._out_path(f"{stem}_topol.top")
         if os.path.exists(output) and not overwrite:
             logger.info("Martinize2 output exists at %s; skipping martinize2 execution.", output)
             return output
@@ -2219,7 +2290,7 @@ class PACKMOLMemgen(object):
             lig_output = output[:-4] + "_ligs.pdb" if output.lower().endswith(".pdb") else output + "_ligs.pdb"
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
-        tmp_folder = os.path.abspath(tmp_prefix+pdb_base[:-4]+n_ter+"_MEMPRO")
+        tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter + "_MEMPRO")
         out_dir = tmp_folder + os.path.sep
         info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
         cg_dir = os.path.join(tmp_folder, "Rank_1", "CG_System_rank_1")
@@ -2412,7 +2483,7 @@ class PACKMOLMemgen(object):
         logger.info("Using MemPrO Global curvature as --curvature: %s", curvature)
 
     def pdbvol(self,pdb,spacing=0.5,overwrite=False):
-        output = pdb[:-4]+".grid.pdb"
+        output = self._local_output_path(pdb, ".grid.pdb")
         if os.path.exists(output) and not overwrite:
             filelength = len(open(output,"r").readlines())
             vol        = filelength*spacing**3
@@ -2425,17 +2496,20 @@ class PACKMOLMemgen(object):
                 if (line[0:4] == "ATOM" or line[0:6] == "HETATM") and  line[17:20].strip() != "DUM":
                     temp_pdb.append(line)
             logger.debug("PDBREMIX grid: input lines=%s kept=%s", len(filelines), len(temp_pdb))
-            temp = open("temp.pdb","w").writelines(temp_pdb)
+            tmp_path = self._out_path("temp.pdb")
+            open(tmp_path,"w").writelines(temp_pdb)
             logger.debug("PDBREMIX grid: temp.pdb written, reading with pdbremix")
-            atoms = pdbatoms.read_pdb("temp.pdb")
+            atoms = pdbatoms.read_pdb(tmp_path)
             pdbatoms.add_radii(atoms)
             logger.debug("PDBREMIX grid: calling volume()")
             vol = volume(atoms, spacing, output, verbose=False)
             logger.debug("PDBREMIX grid: volume() done, vol=%s", vol)
-            os.remove("temp.pdb")
+            os.remove(tmp_path)
             return (output, vol)
 
     def run_packmol(self):
+        os.makedirs(self.outdir, exist_ok=True)
+        os.makedirs(os.path.dirname(self.packlog) or ".", exist_ok=True)
         with open(self.packlog+".inp","w+") as script:
             script.write(self.contents)
             script.seek(0, os.SEEK_SET)
@@ -2541,7 +2615,7 @@ class PACKMOLMemgen(object):
                         plt.savefig(self.outfile+'.png')
                     except:
                         logger.error("ERROR:\n    Matplotlib could not be imported. Check that you have a working version.")
-                    with open("GENCAN.log","w") as gencanlog:
+                    with open(self._out_path("GENCAN.log"),"w") as gencanlog:
                         gencanlog.write("\n".join("%s %s" % x for x in energy_values))
 
                 if not os.path.exists(self.outfile):
@@ -2697,6 +2771,14 @@ def _setup_logging(log_path):
 
 def cli():
     args = parser.parse_args()
+    outdir = os.path.abspath(args.outdir or ".")
+    os.makedirs(outdir, exist_ok=True)
+    if args.log and not os.path.isabs(args.log):
+        args.log = os.path.join(outdir, args.log)
+    if args.output and not os.path.isabs(args.output):
+        args.output = os.path.join(outdir, args.output)
+    if getattr(args, "packlog", None) and not os.path.isabs(args.packlog):
+        args.packlog = os.path.join(outdir, args.packlog)
     _setup_logging(args.log)
     pmg = PACKMOLMemgen(args)
     pmg.run_all()

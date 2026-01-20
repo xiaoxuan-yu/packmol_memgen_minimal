@@ -221,12 +221,14 @@ def apply_xponge_ion_names(pdbfile, outfile=None):
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-def pdb2pqr_protonate(pdb,overwrite=False,ffout='AMBER',pH=7.0):
+def pdb2pqr_protonate(pdb,overwrite=False,ffout='AMBER',pH=7.0, output_dir=None):
     if not pdb2pqr:
         logger.critical("PDB2PQR module was not found. Use a different method to protonate your system")
         exit()
-    output_pqr = pdb[:-4]+"_H.pqr"
-    output_pdb = pdb[:-4]+"_H.pdb"
+    stem = os.path.splitext(os.path.basename(pdb))[0]
+    base_dir = output_dir if output_dir else (os.path.dirname(pdb) or ".")
+    output_pqr = os.path.join(base_dir, stem + "_H.pqr")
+    output_pdb = os.path.join(base_dir, stem + "_H.pdb")
     if os.path.exists(output_pdb) and os.path.exists(output_pqr) and not overwrite:
         return output_pdb
 #As pdb2pqr call logging.basicConfig in the main function, it disrupts the logging setup. Calling in os.system to avoid issues
