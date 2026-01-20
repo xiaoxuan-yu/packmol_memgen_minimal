@@ -2283,7 +2283,7 @@ class PACKMOLMemgen(object):
         self._used_tools.add("martini")
         return output
 
-    def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="in"):
+    def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in"):
         output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
         lig_output = output.replace("_MEMPRO.pdb", "_MEMPRO_ligs.pdb")
         if lig_output == output:
