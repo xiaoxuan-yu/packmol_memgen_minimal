@@ -648,7 +648,8 @@ class PACKMOLMemgen(object):
                 self.tolerance = 3
     
         for solvent in self.solvents.split(":"):
-            if solvent and self.martini:
+            if solvent not in self.sparameters:
+                if solvent and self.martini:
                 insane_solvents = {s.upper() for s in self._load_insane_solvents()}
                 if insane_solvents:
                     if solvent not in insane_solvents:
@@ -661,9 +662,10 @@ class PACKMOLMemgen(object):
                     logger.warning(
                         "WARNING:\n  Insane4MemPrO solvents list not available; skipping Martini solvent validation."
                     )
-            if solvent not in self.sparameters:
+            else:
                 logger.error("ERROR:\n    Selected solvent %s parameters not available. Check --available_solvents" % (solvent))
                 exit()
+            
     
         solvent_ratios = [float(ratio) for ratio in self.solvent_ratio.split(":")]
         solvent_density = sum([float(self.sparameters[solvent]["density"])*solvent_ratios[i] for i, solvent in enumerate(self.solvents.split(":"))])/sum(solvent_ratios)
