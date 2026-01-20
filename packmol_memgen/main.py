@@ -648,6 +648,19 @@ class PACKMOLMemgen(object):
                 self.tolerance = 3
     
         for solvent in self.solvents.split(":"):
+            if solvent and self.martini:
+                insane_solvents = {s.upper() for s in self._load_insane_solvents()}
+                if insane_solvents:
+                    if solvent not in insane_solvents:
+                        logger.critical(
+                            "CRITICAL:\n  Martini solvent %s not found in Insane4MemPrO solvents list.",
+                            solvent,
+                        )
+                        exit()
+                else:
+                    logger.warning(
+                        "WARNING:\n  Insane4MemPrO solvents list not available; skipping Martini solvent validation."
+                    )
             if solvent not in self.sparameters:
                 logger.error("ERROR:\n    Selected solvent %s parameters not available. Check --available_solvents" % (solvent))
                 exit()
