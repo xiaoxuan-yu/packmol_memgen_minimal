@@ -754,6 +754,7 @@ dependencies = [
 
 [package.optional-dependencies]
 full = [
+    { name = "mdtraj" },
     { name = "mempro" },
     { name = "packmol" },
     { name = "vermouth" },
@@ -773,7 +774,8 @@ packmol = [
 requires-dist = [
     { name = "hatch-vcs", specifier = ">=0.5.0" },
     { name = "matplotlib" },
-    { name = "mdtraj", marker = "extra == 'martini'", specifier = ">=1.11.0" },
+    { name = "mdtraj", marker = "extra == 'full'" },
+    { name = "mdtraj", marker = "extra == 'martini'" },
     { name = "mempro", marker = "extra == 'full'" },
     { name = "mempro", marker = "extra == 'mempro'" },
     { name = "numpy" },
