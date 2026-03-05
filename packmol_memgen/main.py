@@ -1242,7 +1242,10 @@ class PACKMOLMemgen(object):
         self.X_len = X_len
         self.Y_len = Y_len
         self.Z_dim = Z_dim
-    
+        sphere_radius = None
+        if self.curvature is not None:
+            sphere_radius = 1 / self.curvature
+
         if os.path.exists(self.outfile) and not self.overwrite:
             logger.info("Packed PDB "+self.outfile+" found. Skipping PACKMOL")
             return False
@@ -1910,12 +1913,17 @@ class PACKMOLMemgen(object):
         if not (src_gro or src_top or src_pdb):
             logger.critical("CRITICAL:\n  No CG outputs found in %s.", cg_dir)
             exit()
+        if not (src_gro or src_top):
+            logger.critical(
+                "CRITICAL:\n  Martini build did not produce a .gro/.top in %s; refusing to use a .pdb as final output.",
+                cg_dir,
+            )
+            exit()
         base = Path(self.outfile).stem if self.outfile else "cg_system"
         dest_dir = os.path.dirname(os.path.abspath(self.outfile)) if self.outfile else self.outdir
         dest_map = {
             ".gro": src_gro[:1],
             ".top": src_top[:1],
-            ".pdb": src_pdb[:1],
         }
         written = []
         for ext, candidates in dest_map.items():
@@ -2819,6 +2827,9 @@ def cli():
     if getattr(args, "packlog", None) and not os.path.isabs(args.packlog):
         args.packlog = os.path.join(outdir, args.packlog)
     _setup_logging(args.log)
+    if args.martini and args.keepligs:
+        logger.critical("CRITICAL:\n  --keepligs is not supported with --martini.")
+        sys.exit(2)
     pmg = PACKMOLMemgen(args)
     pmg.run_all()
 
