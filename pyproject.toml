@@ -8,9 +8,7 @@ description = "A fork of packmol_memgen from AmberTools, a PACKMOL wrapper for p
 readme = "README.rst"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-authors = [
-  { name = "Xiaoxuan Yu", email = "xiaoxuan_yu@pku.edu.cn" },
-]
+authors = [{ name = "Xiaoxuan Yu", email = "xiaoxuan_yu@pku.edu.cn" }]
 classifiers = [
   "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
   "Development Status :: 3 - Alpha",
@@ -33,13 +31,10 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-packmol = ["packmol"]
+packmol = ["packmol==21.1.14"]
 mempro = ["mempro"]
-martini  = [
-    "mdtraj",
-    "vermouth",
-]
-full = ["packmol", "mempro", "vermouth", "mdtraj"]
+martini = ["mdtraj", "vermouth"]
+full = ["packmol==21.1.4", "mempro", "vermouth", "mdtraj"]
 
 [project.urls]
 Homepage = "https://github.com/xiaoxuan-yu/packmol_memgen_minimal/"
@@ -49,17 +44,10 @@ packmol-memgen = "packmol_memgen.main:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["packmol_memgen"]
-include = [
-  "packmol_memgen/**",
-]
+include = ["packmol_memgen/**"]
 
 [tool.hatch.build.targets.sdist]
-include = [
-  "packmol_memgen/**",
-  "README.rst",
-  "LICENSE",
-  "packmol-memgen",
-]
+include = ["packmol_memgen/**", "README.rst", "LICENSE", "packmol-memgen"]
 
 [tool.hatch.version]
 source = "vcs"

@@ -49,6 +49,34 @@ def _prepend_uv_tool_dirs_to_path():
     for name in tool_names:
         candidates.append(default_root / "tools" / name / "bin")
 
+    # Windows defaults for uv
+    if os.name == "nt":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_appdata:
+            root = Path(local_appdata) / "uv"
+            candidates.append(root / "bin")
+            candidates.append(root / "Scripts")
+            for name in tool_names:
+                candidates.append(root / "tools" / name / "bin")
+                candidates.append(root / "tools" / name / "Scripts")
+        roaming_appdata = os.environ.get("APPDATA", "").strip()
+        if roaming_appdata:
+            root = Path(roaming_appdata) / "uv"
+            candidates.append(root / "bin")
+            candidates.append(root / "Scripts")
+            for name in tool_names:
+                candidates.append(root / "tools" / name / "bin")
+                candidates.append(root / "tools" / name / "Scripts")
+
+    # Also add the current interpreter's script dirs (uv tool envs on Windows).
+    exe_dir = Path(sys.executable).parent
+    candidates.append(exe_dir)
+    candidates.append(exe_dir / "Scripts")
+    candidates.append(exe_dir / "bin")
+    prefix_dir = Path(sys.prefix)
+    candidates.append(prefix_dir / "Scripts")
+    candidates.append(prefix_dir / "bin")
+
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
     for path in candidates:
