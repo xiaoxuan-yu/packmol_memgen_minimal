@@ -517,17 +517,23 @@ class Soup():
     self.clear()
     res_num = -1
     res_insert = " "
+    chain_id = None
+    res_type = None
     for line in open(fname, 'r').readlines():
       if line.startswith("ATOM") or line.startswith("HETATM"):
         atom = AtomFromPdbLine(line);
         if (res_num != atom.res_num) or \
-           (res_insert != atom.res_insert):
+           (res_insert != atom.res_insert) or \
+           (chain_id != atom.chain_id) or \
+           (res_type != atom.res_type):
           residue = Residue(
               atom.res_type, atom.chain_id,
               atom.res_num, atom.res_insert)
           self.append_residue(residue)
           res_num = atom.res_num
           res_insert = atom.res_insert
+          chain_id = atom.chain_id
+          res_type = atom.res_type
         self.insert_atom(-1, atom)
       if line.startswith(("END", "ENDMDL")):
         return

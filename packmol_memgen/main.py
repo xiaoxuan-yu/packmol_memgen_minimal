@@ -2360,27 +2360,29 @@ class PACKMOLMemgen(object):
 
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in"):
         output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
-        lig_output = output.replace("_MEMPRO.pdb", "_MEMPRO_ligs.pdb")
-        if lig_output == output:
-            lig_output = output[:-4] + "_ligs.pdb" if output.lower().endswith(".pdb") else output + "_ligs.pdb"
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
         tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter + "_MEMPRO")
         out_dir = tmp_folder + os.path.sep
         info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
         cg_dir = os.path.join(tmp_folder, "Rank_1", "CG_System_rank_1")
+        oriented = os.path.join(tmp_folder, "Rank_1", "oriented_rank_1.pdb")
         if os.path.exists(output) and not overwrite:
             logger.info("MemPrO output exists at %s; skipping MemPrO execution.", output)
+            if os.path.exists(oriented):
+                input_atoms = self._count_pdb_atoms(pdb)
+                output_atoms = self._count_pdb_atoms(output)
+                if input_atoms and output_atoms and output_atoms < input_atoms:
+                    logger.info(
+                        "Cached MemPrO output appears to miss atoms (%s < %s); rebuilding oriented PDB from cached transform.",
+                        output_atoms,
+                        input_atoms,
+                    )
+                    self._write_mempro_aligned_pdb(pdb, oriented, output)
             self._apply_mempro_curvature(info_path)
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
                 self._finalize_martini_build()
-            if keepligs:
-                if verbose:
-                    logger.info("Superimposing to keep ligands")
-                if overwrite or not os.path.exists(lig_output):
-                    rmsd_of_pdbs(pdb, output, transform_pdb1=lig_output, standard=True)
-                output = lig_output
             if double_span:
                 if not os.path.exists(info_path):
                     logger.warning(
@@ -2455,8 +2457,6 @@ class PACKMOLMemgen(object):
             if not self.mempro:
                 logger.critical("CRITICAL:\n  MemPrO executable not found. Use --mempro to point to MemPrO.")
                 exit()
-            if keepligs:
-                logger.warning("WARNING: MemPrO ignores HETATM records; ligands may be dropped during orientation.")
             if os.path.isfile(self.mempro) and self.mempro.endswith(".py"):
                 cmd = [sys.executable, self.mempro]
             else:
@@ -2481,27 +2481,10 @@ class PACKMOLMemgen(object):
             if result.returncode != 0:
                 logger.critical("CRITICAL:\n  MemPrO failed to orient the protein. Check MemPrO logs and inputs.")
                 exit()
-            oriented = os.path.join(tmp_folder, "Rank_1", "oriented_rank_1.pdb")
             if not os.path.exists(oriented):
                 logger.critical("CRITICAL:\n  MemPrO output not found at %s", oriented)
                 exit()
-            shutil.copy(oriented, output)
-            cleaned = []
-            with open(output, "r") as f:
-                for line in f:
-                    if not (line.startswith("ATOM") or line.startswith("HETATM")):
-                        continue
-                    if line[17:20].strip() == "DUM":
-                        continue
-                    cleaned.append(line)
-            with open(output, "w") as f:
-                f.writelines(cleaned)
-            if keepligs:
-                if verbose:
-                    logger.info("Superimposing to keep ligands")
-                if overwrite or not os.path.exists(lig_output):
-                    rmsd_of_pdbs(pdb, output, transform_pdb1=lig_output, standard=True)
-                output = lig_output
+            self._write_mempro_aligned_pdb(pdb, oriented, output)
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
         self._apply_mempro_curvature(info_path)
@@ -2523,6 +2506,40 @@ class PACKMOLMemgen(object):
                 exit()
             return (output, z_offset)
         return output
+
+    def _count_pdb_atoms(self, pdb_path):
+        count = 0
+        with open(pdb_path, "r") as handle:
+            for line in handle:
+                if line.startswith(("ATOM", "HETATM")):
+                    count += 1
+        return count
+
+    def _write_mempro_aligned_pdb(self, source_pdb, oriented_pdb, output_pdb):
+        source_soup = pdbatoms.Soup(source_pdb)
+        oriented_soup = pdbatoms.Soup(oriented_pdb)
+        atoms_source = get_superposable_atoms(source_soup, [], ["CA"], standard=True)
+        atoms_oriented = get_superposable_atoms(oriented_soup, [], ["CA"], standard=True)
+        if len(atoms_source) != len(atoms_oriented) or len(atoms_source) == 0:
+            logger.critical(
+                "CRITICAL:\n  Could not derive a MemPrO transform from standard CA atoms (%s vs %s).",
+                len(atoms_source),
+                len(atoms_oriented),
+            )
+            exit()
+
+        crds_source = [atom.pos for atom in atoms_source]
+        crds_oriented = [atom.pos for atom in atoms_oriented]
+        center_source = v3.get_center(crds_source)
+        center_oriented = v3.get_center(crds_oriented)
+
+        source_soup.transform(v3.translation(-center_source))
+        oriented_soup.transform(v3.translation(-center_oriented))
+        rmsd, transform_source_to_oriented = calc_rmsd_rot(crds_source, crds_oriented)
+        source_soup.transform(transform_source_to_oriented)
+        source_soup.transform(v3.translation(center_oriented))
+        source_soup.write_pdb(output_pdb)
+        logger.debug("Applied MemPrO transform to original PDB (standard-residue CA RMSD %.4f).", rmsd)
 
     def _parse_mempro_global_curvature(self, info_path):
         if not os.path.exists(info_path):
