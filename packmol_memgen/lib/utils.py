@@ -524,7 +524,7 @@ class MembraneParams(object):
     """
     A class to store membrane params corresponding to a PDB
     """
-    def __init__(self,pdb, leaflet_z, grid=None, move=False, move_vec=[0,0,0], xy_cen=False, z_cen = False, outpdb="PROT.pdb", chain=" ",renumber=False):
+    def __init__(self,pdb, leaflet_z, grid=None, move=False, move_vec=[0,0,0], xy_cen=False, z_cen = False, outpdb="PROT.pdb", chain=" ",renumber=False, preserve_records=False):
         #Getting variables into class attributes
         self.pdb = pdb
         self.leaflet_z = leaflet_z
@@ -536,6 +536,7 @@ class MembraneParams(object):
         self.outpdb = outpdb
         self.chain = chain
         self.renumber = renumber
+        self.preserve_records = preserve_records
 
 
         #Variables to store values after
@@ -573,6 +574,33 @@ class MembraneParams(object):
         new_file = open(self.outpdb,"w")
         new_file.writelines(self.new_pdb)
         new_file.close()
+
+    def _transform_xyz(self, x_coord, y_coord, z_coord):
+        if not self.move and not self.xy_cen:
+            pass
+        elif not self.move:
+            x_coord -= self._x_cen
+            y_coord -= self._y_cen
+            if self.z_cen:
+                z_coord -= self._z_cen
+        elif not self.xy_cen:
+            x_coord += self.move_vec[0]
+            y_coord += self.move_vec[1]
+            z_coord += self.move_vec[2]
+        else:
+            x_coord += self.move_vec[0] - self._x_cen
+            y_coord += self.move_vec[1] - self._y_cen
+            z_coord += self.move_vec[2]
+            if self.z_cen:
+                z_coord -= self._z_cen
+        return x_coord, y_coord, z_coord
+
+    def _replace_coords(self, line, x_coord, y_coord, z_coord):
+        raw = line.rstrip("\n")
+        if len(raw) < 54:
+            raw = raw.ljust(54)
+        raw = raw[:30] + f"{x_coord:8.3f}{y_coord:8.3f}{z_coord:8.3f}" + raw[54:]
+        return raw + "\n"
 
     def xyz_center(self):
         """
@@ -708,6 +736,63 @@ class MembraneParams(object):
                     else:
                         print("Atom "+element+" mass will not be considered!\n")
 
+    def pdb_preserve_coords(self):
+        """
+        Go over PDB lines and update only coordinates, preserving all other fields.
+        """
+        track = None
+        last_chain = None
+
+        self.xyz_center()
+
+        for line in self.pdblines:
+            if line.startswith(("ATOM", "HETATM")) and len(line) >= 54:
+                residue = line[17:21].strip()
+                atomname = line[12:16].strip()
+                chain = line[21:22]
+                resnum = line[22:26].strip()
+                x_coord = float(line[30:38])
+                y_coord = float(line[38:46])
+                z_coord = float(line[46:54])
+                x_coord, y_coord, z_coord = self._transform_xyz(x_coord, y_coord, z_coord)
+                self.new_pdb.append(self._replace_coords(line, x_coord, y_coord, z_coord))
+
+                if residue == "DUM":
+                    continue
+
+                self.x.append(float(x_coord))
+                self.y.append(float(y_coord))
+                self.z.append(float(z_coord))
+                if last_chain is not None and last_chain != chain:
+                    self.chains += 1
+                last_chain = chain
+
+                if residue in charged and track != (chain, resnum):
+                    self.charge += charged[residue]
+                    track = (chain, resnum)
+
+                if line.startswith("ATOM"):
+                    element = data.guess_element(residue, atomname)
+                    if element in data.masses:
+                        self.mass += data.masses[element]
+                        if element == "H":
+                            self.hydrogens += 1
+                        if self.z[-1] > self.leaflet_z:
+                            self.solv_atoms_mass_up += data.masses[element]
+                        elif self.z[-1] < -self.leaflet_z:
+                            self.solv_atoms_mass_down += data.masses[element]
+                        else:
+                            if self.z[-1] >= 0:
+                                self.mem_atoms_mass_up +=  data.masses[element]
+                            else:
+                                self.mem_atoms_mass_down +=  data.masses[element]
+                            self.x_mem.append(self.x[-1])
+                            self.y_mem.append(self.y[-1])
+                    else:
+                        print("Atom "+element+" mass will not be considered!\n")
+            else:
+                self.new_pdb.append(line)
+
     def read_grid(self):
         file = open(self.grid,"r").readlines()
         solv_up = 0
@@ -744,7 +829,10 @@ class MembraneParams(object):
     def measure(self):
 
         self.read_pdb()
-        self.pdb_reindex()
+        if self.preserve_records:
+            self.pdb_preserve_coords()
+        else:
+            self.pdb_reindex()
         self.write_pdb()
 
         if self.hydrogens == 0:

@@ -160,6 +160,7 @@ parser.add_argument("--xponge",     action="store_true",          help=argparse.
 parser.add_argument("--pdb2pqr",      action="store_true",        help=argparse.SUPPRESS if short_help else "uses pdb2pqr to protonate the protein structure")
 parser.add_argument("--pdb2pqr_pH",   type=float, default=7.0,    help=argparse.SUPPRESS if short_help else "pH to be used by pdb2pqr to protonate the structure")
 parser.add_argument("--notprotonate", action="store_false",       help=argparse.SUPPRESS if short_help else "skips protonation")
+parser.add_argument("--preserve-protein-records", action="store_true", help=argparse.SUPPRESS if short_help else "preserve original protein PDB records and only update coordinates; disables protonation and avoids renaming atoms, renumbering, or inserting TER records for protein intermediates")
 
 inputs = parser.add_argument_group('Inputs')
 inputs.add_argument("-p","--pdb",           action="append",       help="PDB or PQR file(s) to embed. If many bilayers, it has to be specified once for each bilayer. 'None' can be specified and a bilayer without protein will be generated [ex. --pdb PDB1.pdb --pdb None --pdb PDB2.pdb (3 bilayers without protein in the middle)]. If no PDB is provided, the bilayer(s) will be membrane only (--distxy_fix has to be defined).")
@@ -589,12 +590,20 @@ class PACKMOLMemgen(object):
         grid_calc = self.notgridvol
         self.delete = not self.keep
 
+        if self.preserve_protein_records and protonate:
+            logger.info("Protein record preservation enabled; disabling protonation.")
+            protonate = False
+            self.pdb2pqr = False
+
         if self.martini and protonate:
             logger.info("Martini mode enabled; skipping protonation.")
             protonate = False
 
         # JSwails suggestion//Check if in a tty. Turn off progress bar if that's the case.
-        if not os.isatty(sys.stdin.fileno()):
+        try:
+            if not os.isatty(sys.stdin.fileno()):
+                self.noprogress = True
+        except Exception:
             self.noprogress = True
     
         # Make a list with created files for later deletion
@@ -943,14 +952,14 @@ class PACKMOLMemgen(object):
                             logger.debug("Attempting to orient double span protein using MemPrO...")
                             self._used_tools.add("mempro")
                             self._used_tools.add("martini")
-                            pdb, z_offset_ds = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], double_span=True)
+                            pdb, z_offset_ds = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], double_span=True, preserve_records=self.preserve_protein_records)
                             z_offset_ds = np.abs(z_offset_ds)
                             pdb_ds = pdb
                         else:
                             logger.debug("Orienting the protein using MemPrO...")
                             self._used_tools.add("mempro")
                             self._used_tools.add("martini")
-                            pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n])
+                            pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], preserve_records=self.preserve_protein_records)
                         if self.martini and self.build_system is not None:
                             self._finalize_martini_build()
                     if self.keep_mempro:
@@ -1003,6 +1012,7 @@ class PACKMOLMemgen(object):
                         outpdb=self._out_path("PROT" + str(n) + ".pdb"),
                         chain=chain_index[chain_nr],
                         renumber=True,
+                        preserve_records=self.preserve_protein_records,
                     )
                     minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                     chain_nr += chains
@@ -1020,6 +1030,7 @@ class PACKMOLMemgen(object):
                             outpdb=self._out_path("PROT" + str(n + 1) + ".pdb"),
                             chain=chain_index[chain_nr],
                             renumber=True,
+                            preserve_records=self.preserve_protein_records,
                         )
                         minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                         chain_nr += chains
@@ -1040,6 +1051,7 @@ class PACKMOLMemgen(object):
                         outpdb=self._out_path("PROT" + str(n) + ".pdb"),
                         chain=chain_index[chain_nr],
                         renumber=True,
+                        preserve_records=self.preserve_protein_records,
                     )
                     minmax, max_rad, charge_prot, vol, memvol_up, memvol_down, solvol_up, solvol_down, density, mass, chains = mem_params.measure()
                 else:
@@ -2358,7 +2370,7 @@ class PACKMOLMemgen(object):
         self._used_tools.add("martini")
         return output
 
-    def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in"):
+    def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in", preserve_records=False):
         output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
@@ -2378,7 +2390,7 @@ class PACKMOLMemgen(object):
                         output_atoms,
                         input_atoms,
                     )
-                    self._write_mempro_aligned_pdb(pdb, oriented, output)
+                    self._write_mempro_aligned_pdb(pdb, oriented, output, preserve_records=preserve_records)
             self._apply_mempro_curvature(info_path)
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
@@ -2484,7 +2496,7 @@ class PACKMOLMemgen(object):
             if not os.path.exists(oriented):
                 logger.critical("CRITICAL:\n  MemPrO output not found at %s", oriented)
                 exit()
-            self._write_mempro_aligned_pdb(pdb, oriented, output)
+            self._write_mempro_aligned_pdb(pdb, oriented, output, preserve_records=preserve_records)
             if self.martini and self.build_system is not None:
                 self.martini_build_output = cg_dir if os.path.exists(cg_dir) else None
         self._apply_mempro_curvature(info_path)
@@ -2515,7 +2527,21 @@ class PACKMOLMemgen(object):
                     count += 1
         return count
 
-    def _write_mempro_aligned_pdb(self, source_pdb, oriented_pdb, output_pdb):
+    def _apply_coordinate_transform_preserving_records(self, source_pdb, output_pdb, transform_matrix):
+        with open(source_pdb, "r") as source, open(output_pdb, "w") as output:
+            for line in source:
+                if line.startswith(("ATOM", "HETATM", "ANISOU")) and len(line) >= 54:
+                    raw = line.rstrip("\n")
+                    if len(raw) < 54:
+                        raw = raw.ljust(54)
+                    coord = np.array([float(raw[30:38]), float(raw[38:46]), float(raw[46:54])])
+                    transformed = v3.transform(transform_matrix, coord)
+                    raw = raw[:30] + f"{transformed[0]:8.3f}{transformed[1]:8.3f}{transformed[2]:8.3f}" + raw[54:]
+                    output.write(raw + "\n")
+                else:
+                    output.write(line)
+
+    def _write_mempro_aligned_pdb(self, source_pdb, oriented_pdb, output_pdb, preserve_records=False):
         source_soup = pdbatoms.Soup(source_pdb)
         oriented_soup = pdbatoms.Soup(oriented_pdb)
         atoms_source = get_superposable_atoms(source_soup, [], ["CA"], standard=True)
@@ -2533,12 +2559,19 @@ class PACKMOLMemgen(object):
         center_source = v3.get_center(crds_source)
         center_oriented = v3.get_center(crds_oriented)
 
-        source_soup.transform(v3.translation(-center_source))
-        oriented_soup.transform(v3.translation(-center_oriented))
         rmsd, transform_source_to_oriented = calc_rmsd_rot(crds_source, crds_oriented)
-        source_soup.transform(transform_source_to_oriented)
-        source_soup.transform(v3.translation(center_oriented))
-        source_soup.write_pdb(output_pdb)
+        transform_matrix = v3.combine(
+            v3.translation(center_oriented),
+            v3.combine(transform_source_to_oriented, v3.translation(-center_source)),
+        )
+        if preserve_records:
+            self._apply_coordinate_transform_preserving_records(source_pdb, output_pdb, transform_matrix)
+        else:
+            source_soup.transform(v3.translation(-center_source))
+            oriented_soup.transform(v3.translation(-center_oriented))
+            source_soup.transform(transform_source_to_oriented)
+            source_soup.transform(v3.translation(center_oriented))
+            source_soup.write_pdb(output_pdb)
         logger.debug("Applied MemPrO transform to original PDB (standard-residue CA RMSD %.4f).", rmsd)
 
     def _parse_mempro_global_curvature(self, info_path):
