@@ -53,5 +53,8 @@ include = ["packmol_memgen/**", "README.rst", "LICENSE", "packmol-memgen"]
 source = "vcs"
 tag-pattern = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
 
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+
 [tool.hatch.build.hooks.vcs]
 version-file = "packmol_memgen/__version__.py"
