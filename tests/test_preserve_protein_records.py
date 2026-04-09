@@ -21,7 +21,7 @@ END
 """
 
 
-def test_preserve_protein_records_cli_keeps_protein_records(tmp_path: Path):
+def test_default_cli_preserves_protein_records_and_skips_protonation(tmp_path: Path):
     pdb_path = tmp_path / "input.pdb"
     pdb_path.write_text(PDB_TEXT)
 
@@ -29,8 +29,6 @@ def test_preserve_protein_records_cli_keeps_protein_records(tmp_path: Path):
         [
             "--solvate",
             "--notrun",
-            "--notprotonate",
-            "--preserve-protein-records",
             "--noxy_cen",
             "-p",
             str(pdb_path),
@@ -51,3 +49,25 @@ def test_preserve_protein_records_cli_keeps_protein_records(tmp_path: Path):
     assert " OXT " not in output
     assert "GLY B  10" in output
     assert "structure " + str(prot_path) in pmg.contents
+
+
+def test_rewrite_and_protonate_flags_restore_legacy_behavior(tmp_path: Path):
+    pdb_path = tmp_path / "input.pdb"
+    pdb_path.write_text(PDB_TEXT)
+
+    args = parser.parse_args(
+        [
+            "--solvate",
+            "--notrun",
+            "--noxy_cen",
+            "--rewrite-protein-records",
+            "--protonate",
+            "-p",
+            str(pdb_path),
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    assert args.preserve_protein_records is False
+    assert args.notprotonate is True

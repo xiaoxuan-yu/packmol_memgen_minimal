@@ -89,7 +89,7 @@ def _prepend_uv_tool_dirs_to_path():
 _prepend_uv_tool_dirs_to_path()
 
 
-explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. The input pdb file will be protonated and oriented by default using pdb2pqr and MemPrO; the user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
+explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. By default the input protein records are preserved and protonation is skipped; orientation can still be applied using MemPrO. The user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
 
  If you use this script, please cite the tools reported at the end of the run:
 
@@ -159,8 +159,10 @@ parser.add_argument("--xponge",     action="store_true",          help=argparse.
 
 parser.add_argument("--pdb2pqr",      action="store_true",        help=argparse.SUPPRESS if short_help else "uses pdb2pqr to protonate the protein structure")
 parser.add_argument("--pdb2pqr_pH",   type=float, default=7.0,    help=argparse.SUPPRESS if short_help else "pH to be used by pdb2pqr to protonate the structure")
-parser.add_argument("--notprotonate", action="store_false",       help=argparse.SUPPRESS if short_help else "skips protonation")
-parser.add_argument("--preserve-protein-records", action="store_true", help=argparse.SUPPRESS if short_help else "preserve original protein PDB records and only update coordinates; disables protonation and avoids renaming atoms, renumbering, or inserting TER records for protein intermediates")
+parser.add_argument("--protonate", action="store_true", dest="notprotonate", default=False, help=argparse.SUPPRESS if short_help else "enable protonation of the protein structure")
+parser.add_argument("--notprotonate", action="store_false", dest="notprotonate", help=argparse.SUPPRESS if short_help else "skips protonation")
+parser.add_argument("--preserve-protein-records", action="store_true", default=True, help=argparse.SUPPRESS if short_help else "preserve original protein PDB records and only update coordinates; avoids renaming atoms, renumbering, or inserting TER records for protein intermediates")
+parser.add_argument("--rewrite-protein-records", action="store_false", dest="preserve_protein_records", help=argparse.SUPPRESS if short_help else "enable legacy protein record rewriting during preprocessing")
 
 inputs = parser.add_argument_group('Inputs')
 inputs.add_argument("-p","--pdb",           action="append",       help="PDB or PQR file(s) to embed. If many bilayers, it has to be specified once for each bilayer. 'None' can be specified and a bilayer without protein will be generated [ex. --pdb PDB1.pdb --pdb None --pdb PDB2.pdb (3 bilayers without protein in the middle)]. If no PDB is provided, the bilayer(s) will be membrane only (--distxy_fix has to be defined).")
@@ -586,7 +588,7 @@ class PACKMOLMemgen(object):
             if int(self.nloop) < int(self.writeout) or int(self.nloop_all) < int(self.writeout):
                 logger.error("ERROR:\n    nloop and nloop_all have to be bigger than the writeout frequency! Modify the used values.")
                 exit()
-        protonate = self.notprotonate
+        protonate = self.notprotonate or self.pdb2pqr
         grid_calc = self.notgridvol
         self.delete = not self.keep
 
