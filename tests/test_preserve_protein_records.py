@@ -71,3 +71,74 @@ def test_rewrite_and_protonate_flags_restore_legacy_behavior(tmp_path: Path):
 
     assert args.preserve_protein_records is False
     assert args.notprotonate is True
+
+
+def test_mempro_windows_retry_uses_single_cpu_without_mutating_environment(monkeypatch):
+    calls = []
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(cmd, env=None):
+        calls.append((cmd, env))
+        return Result(1 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(MODULE.os, "name", "nt")
+    monkeypatch.setenv("NUM_CPU", "20")
+
+    pmg = object.__new__(PACKMOLMemgen)
+    result = pmg._run_mempro_command(["mempro", "-f", "input.pdb"])
+
+    assert result.returncode == 0
+    assert len(calls) == 2
+    assert calls[0][1] is None
+    assert calls[1][1]["NUM_CPU"] == "1"
+    assert MODULE.os.environ["NUM_CPU"] == "20"
+
+
+def test_mempro_default_membrane_thickness_is_double_leaflet(tmp_path: Path, monkeypatch):
+    pdb_path = tmp_path / "input.pdb"
+    pdb_path.write_text(PDB_TEXT)
+    captured = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, verbose=False):
+        captured["cmd"] = cmd
+        oriented = tmp_path / "_tmp_input_in_MEMPRO" / "Rank_1" / "oriented_rank_1.pdb"
+        oriented.parent.mkdir(parents=True, exist_ok=True)
+        oriented.write_text(PDB_TEXT)
+        return Result()
+
+    def fake_write(source_pdb, oriented_pdb, output_pdb, preserve_records=False):
+        Path(output_pdb).write_text(PDB_TEXT)
+
+    pmg = object.__new__(PACKMOLMemgen)
+    pmg.outdir = str(tmp_path)
+    pmg.keep_mempro = False
+    pmg.created = []
+    pmg.created_mempro = []
+    pmg.martini = False
+    pmg.build_system = None
+    pmg.build_arguments = None
+    pmg.mempro = "mempro"
+    pmg.mempro_grid = 36
+    pmg.mempro_iters = 150
+    pmg.mempro_rank = "auto"
+    pmg.mempro_args = None
+    pmg.leaflet = 23.0
+    pmg.mempro_curvature = False
+    pmg._used_tools = set()
+    pmg._run_mempro_command = fake_run
+    pmg._write_mempro_aligned_pdb = fake_write
+    pmg._apply_mempro_curvature = lambda info_path: None
+
+    output = pmg.mempro_align(str(pdb_path), overwrite=True)
+
+    mt_index = captured["cmd"].index("-mt")
+    assert captured["cmd"][mt_index + 1] == "46.0"
+    assert pmg.leaflet == 23.0
+    assert output == str(tmp_path / "input_in_MEMPRO.pdb")

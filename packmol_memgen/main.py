@@ -2372,6 +2372,27 @@ class PACKMOLMemgen(object):
         self._used_tools.add("martini")
         return output
 
+    def _mempro_membrane_thickness(self):
+        return self.leaflet * 2
+
+    def _run_mempro_command(self, cmd, verbose=False):
+        if verbose:
+            logger.info("Running MemPrO: %s", " ".join(cmd))
+        result = subprocess.run(cmd)
+        num_cpu = os.environ.get("NUM_CPU", "").strip()
+        if result.returncode != 0 and os.name == "nt" and num_cpu and num_cpu != "1":
+            retry_env = os.environ.copy()
+            retry_env["NUM_CPU"] = "1"
+            logger.warning(
+                "MemPrO failed on Windows with NUM_CPU=%s; retrying once with NUM_CPU=1 "
+                "to avoid JAX CPU pmap instability.",
+                num_cpu,
+            )
+            if verbose:
+                logger.info("Retrying MemPrO with NUM_CPU=1: %s", " ".join(cmd))
+            result = subprocess.run(cmd, env=retry_env)
+        return result
+
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in", preserve_records=False):
         output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
         pdb_base = os.path.basename(pdb)
@@ -2478,7 +2499,7 @@ class PACKMOLMemgen(object):
             cmd += ["-f", pdb, "-o", out_dir, "-ng", str(self.mempro_grid), "-ni", str(self.mempro_iters), "-rank", self.mempro_rank]
             mempro_arg_str = self.mempro_args or ""
             if "-mt" not in mempro_arg_str and "--membrane_thickness" not in mempro_arg_str:
-                cmd += ["-mt", str(self.leaflet)]
+                cmd += ["-mt", str(self._mempro_membrane_thickness())]
             if self.martini and self.build_system is not None:
                 cmd += ["-bd", str(self.build_system)]
                 if self.build_arguments:
@@ -2489,9 +2510,7 @@ class PACKMOLMemgen(object):
                 cmd.append("-c")
             if self.mempro_args:
                 cmd += shlex.split(self.mempro_args)
-            if verbose:
-                logger.info("Running MemPrO: %s", " ".join(cmd))
-            result = subprocess.run(cmd)
+            result = self._run_mempro_command(cmd, verbose=verbose)
             if result.returncode != 0:
                 logger.critical("CRITICAL:\n  MemPrO failed to orient the protein. Check MemPrO logs and inputs.")
                 exit()
