@@ -109,7 +109,7 @@ Backend-specific behavior:
   ``--insane_build_ranks`` and ``--insane_args``
 - ``pymemembed``: optional Python/Numba MEMEMBED implementation vendored from
   AmberTools 26; used through direct module calls rather than a subprocess;
-  intended only for orientation and oriented-PDB output
+  intended only for flat-membrane orientation and oriented-PDB output
 - ``preoriented``: skips orientation entirely
 
 ``pymemembed`` options:
@@ -125,7 +125,10 @@ Backend-specific behavior:
 
 Current limitations of the ``pymemembed`` backend:
 
-- no support for ``--double_span``
+- ``--double_span`` is supported only for flat-membrane orientation via a
+  two-stage reorientation workflow; it depends on the oriented PDB containing
+  parseable ``DUM`` membrane markers and does not extend to Martini build or
+  curvature features
 - no support for MemPrO-only curvature or Martini build options
 - final oriented PDBs are rewritten from the original coordinates so that
   existing record-preservation behavior remains consistent with the MemPrO path

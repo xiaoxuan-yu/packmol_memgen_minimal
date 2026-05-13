@@ -182,7 +182,7 @@ inputs.add_argument("--solute_prot_dist",  type=float,             help=argparse
 embedopt = parser.add_argument_group('Orientation options')
 embedopt.add_argument("--orientation-backend", action=_StoreOrientationBackend, choices=["mempro", "pymemembed", "preoriented"], help=argparse.SUPPRESS if short_help else "orientation backend: mempro (default), pymemembed, or preoriented")
 embedopt.add_argument("--preoriented",  action="store_true",          help="use this flag if the protein has been previosuly oriented and you want to avoid running orientation entirely (i.e. from OPM)")
-embedopt.add_argument("--double_span",  action="store_true",          help=argparse.SUPPRESS) #"orient protein twice, assuming it spans two membrane bilayer")
+embedopt.add_argument("--double_span",  action="store_true",          help=argparse.SUPPRESS if short_help else "orient the protein twice to place two transmembrane regions into separate flat bilayers; supported for MemPrO and pymemembed flat-membrane orientation")
 embedopt.add_argument("--n_ter",        action="append",              help=argparse.SUPPRESS if short_help else "'in' or 'out'. By default proteins are oriented with the n_ter oriented 'in' (or 'down'). relevant for multi layer system. If defined for one protein, it has to be defined for all of them, following previous order")
 embedopt.add_argument("--keepligs",     action="store_true",          help=argparse.SUPPRESS if short_help else "preserve ligand/HETATM records across orientation; required mainly for backends that do not rewrite them directly")
 embedopt.add_argument("--mempro",type=str,                            help=argparse.SUPPRESS if short_help else "Path to MemPrO executable or MemPrO_Script.py")
@@ -325,11 +325,6 @@ class PACKMOLMemgen(object):
                     ", ".join(invalid),
                 )
                 exit()
-        if backend == "pymemembed" and self.double_span:
-            logger.critical(
-                "CRITICAL:\n  --double_span is not supported with --orientation-backend pymemembed."
-            )
-            exit()
         if backend == "pymemembed" and self.martini and self.build_system is not None:
             logger.critical(
                 "CRITICAL:\n  --insane_build_ranks is only supported with --orientation-backend mempro."
@@ -390,6 +385,181 @@ class PACKMOLMemgen(object):
             return None
         return [chain.strip() for chain in self.pymemembed_chains.split(",") if chain.strip()]
 
+    def _run_pymemembed_orientation(self, pymemembed, pymemembed_wrapper, pdb, output_file, n_ter, verbose=False, polar_headgroups=None):
+        method = self._pymemembed_method()
+        chains = self._pymemembed_chains_list()
+        if polar_headgroups is None:
+            polar_headgroups = self.pymemembed_polar_headgroups
+        if verbose:
+            logger.info(
+                "Running pymemembed: method=%s threads=%s span=%s barrel=%s",
+                method,
+                self.pymemembed_threads,
+                self.pymemembed_force_span,
+                self.pymemembed_barrel,
+            )
+        if method == "ga_multi":
+            return pymemembed_wrapper.run_ga_multi(
+                pdb_file=pdb,
+                output_file=output_file,
+                beta_barrel=self.pymemembed_barrel,
+                threads=self.pymemembed_threads,
+                n_runs=self.pymemembed_runs,
+                max_calls_per_run=self.pymemembed_max_calls,
+                n_ter=n_ter,
+                force_span=self.pymemembed_force_span,
+                chains=chains,
+                verbose=verbose,
+            )
+        return pymemembed.memembed_align(
+            pdb_file=pdb,
+            output_file=output_file,
+            method=method,
+            threads=self.pymemembed_threads,
+            max_calls=self.pymemembed_max_calls,
+            beta_barrel=self.pymemembed_barrel,
+            force_span=self.pymemembed_force_span,
+            chains=chains,
+            n_ter=n_ter,
+            verbose=verbose,
+            polar_headgroups=polar_headgroups,
+        )
+
+    def _parse_pymemembed_membrane_markers(self, pdb_path):
+        parsed = pdb_parse(pdb_path, onlybb=False)
+        marker_coords = {"N": [], "O": []}
+        for residue, atoms in parsed.items():
+            if residue[0] != "DUM":
+                continue
+            for atom_key, coord in atoms.items():
+                atom_name = atom_key[0]
+                if atom_name in marker_coords:
+                    marker_coords[atom_name].append(coord)
+
+        selected = {}
+        for atom_name, coords in marker_coords.items():
+            if not coords:
+                logger.critical(
+                    "CRITICAL:\n  pymemembed double-span requires DUM %s markers in %s.",
+                    atom_name,
+                    pdb_path,
+                )
+                exit()
+            target_z = min((round(float(coord[2]), 3) for coord in coords), key=abs)
+            cluster = [coord for coord in coords if abs(float(coord[2]) - target_z) < 1e-3]
+            selected[atom_name] = np.mean(cluster, axis=0)
+
+        return {
+            "parsed": parsed,
+            "low_bound": selected["N"],
+            "up_bound": selected["O"],
+            "center": np.mean([selected["N"], selected["O"]], axis=0),
+        }
+
+    def _build_pymemembed_double_span_input(self, oriented_pdb_path, output_path):
+        marker_info = self._parse_pymemembed_membrane_markers(oriented_pdb_path)
+        oriented = marker_info["parsed"]
+        low_z = marker_info["low_bound"][2]
+        up_z = marker_info["up_bound"][2]
+        tmless = {
+            residue: atoms
+            for residue, atoms in oriented.items()
+            if not any(low_z <= coord[2] <= up_z for coord in atoms.values())
+        }
+        tmless[("MEM", 1, "X")] = {("MEM", 1): marker_info["center"]}
+        pdb_write(tmless, outfile=output_path)
+        return marker_info
+
+    def _find_pdb_marker_atom(self, parsed_pdb, residue_name, atom_name, resnum=None):
+        for residue, atoms in parsed_pdb.items():
+            if residue[0] != residue_name:
+                continue
+            if resnum is not None and residue[1] != resnum:
+                continue
+            for key, coord in atoms.items():
+                if key[0] == atom_name:
+                    return coord
+        return None
+
+    def _pymemembed_double_span_z_offset(self, second_stage_raw_pdb):
+        marker_info = self._parse_pymemembed_membrane_markers(second_stage_raw_pdb)
+        mem1 = self._find_pdb_marker_atom(marker_info["parsed"], "MEM", "MEM", resnum=1)
+        if mem1 is None:
+            logger.critical(
+                "CRITICAL:\n  pymemembed double-span could not find MEM 1 marker in %s.",
+                second_stage_raw_pdb,
+            )
+            exit()
+        return abs(float(mem1[2] + marker_info["center"][2]))
+
+    def _pymemembed_double_span_align(
+        self,
+        source_pdb,
+        first_stage_raw_pdb,
+        tmp_folder,
+        final_output,
+        pymemembed,
+        pymemembed_wrapper,
+        n_ter,
+        verbose=False,
+        preserve_records=False,
+    ):
+        stage1_input = os.path.join(tmp_folder, "double_span_stage1_input.pdb")
+        stage2_raw = os.path.join(tmp_folder, "double_span_stage2_raw.pdb")
+        presuper = os.path.join(tmp_folder, "double_span_presuper.pdb")
+        aligned_raw = os.path.join(tmp_folder, "double_span_aligned_raw.pdb")
+
+        first_stage_info = self._build_pymemembed_double_span_input(first_stage_raw_pdb, stage1_input)
+        result = self._run_pymemembed_orientation(
+            pymemembed,
+            pymemembed_wrapper,
+            stage1_input,
+            stage2_raw,
+            n_ter,
+            verbose=verbose,
+            polar_headgroups=False,
+        )
+        if not os.path.exists(stage2_raw):
+            logger.critical("CRITICAL:\n  pymemembed double-span stage 2 output not found at %s", stage2_raw)
+            exit()
+
+        second_stage_info = self._parse_pymemembed_membrane_markers(stage2_raw)
+        second_stage = second_stage_info["parsed"]
+        mem1 = self._find_pdb_marker_atom(second_stage, "MEM", "MEM", resnum=1)
+        if mem1 is None:
+            logger.critical(
+                "CRITICAL:\n  pymemembed double-span could not find MEM 1 marker after stage 2 in %s.",
+                stage2_raw,
+            )
+            exit()
+
+        dumless = {residue: atoms for residue, atoms in second_stage.items() if residue[0] != "DUM"}
+        dumless[("MEM", 2, "X")] = {("MEM", 2): second_stage_info["center"]}
+
+        z_dist = float(mem1[2] + second_stage_info["center"][2])
+        if z_dist < 0:
+            dumless = translate_pdb(dumless, vec=[0, 0, z_dist])
+            z_dist *= -1
+
+        pdb_write(dumless, outfile=presuper)
+        translated = superimpose_pdb(dumless, first_stage_info["parsed"])
+        pdb_write(translated, outfile=aligned_raw)
+        self._write_aligned_pdb_from_reference(
+            source_pdb,
+            aligned_raw,
+            final_output,
+            preserve_records=preserve_records,
+            tool_name="pymemembed double-span",
+        )
+        pymemembed_wrapper.write_memembed_log(
+            os.path.join(tmp_folder, "pymemembed_stage2.log"),
+            result,
+            str(self.pymemembed_search),
+            self.pymemembed_barrel,
+            n_ter,
+        )
+        return z_dist
+
     def _orient_protein(self, pdb, verbose=False, overwrite=False, n_ter="in", preserve_records=False):
         if self.preoriented or self.orientation_backend == "preoriented":
             return pdb
@@ -413,6 +583,7 @@ class PACKMOLMemgen(object):
             return self.pymemembed_align(
                 pdb,
                 keepligs=self.keepligs,
+                double_span=self.double_span,
                 verbose=verbose,
                 overwrite=overwrite,
                 n_ter=n_ter,
@@ -2716,21 +2887,27 @@ class PACKMOLMemgen(object):
         return output
 
     def pymemembed_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in", preserve_records=False):
-        if double_span:
-            logger.critical(
-                "CRITICAL:\n  --double_span is not supported with --orientation-backend pymemembed."
-            )
-            exit()
         n_ter_label = self._orientation_label(n_ter)
-        output = self._local_output_path(pdb, n_ter_label + "_PYMEMEMBED.pdb")
+        output_suffix = n_ter_label + ("_PYMEMEMBED_double.pdb" if double_span else "_PYMEMEMBED.pdb")
+        output = self._local_output_path(pdb, output_suffix)
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
         tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter_label + "_PYMEMEMBED")
         raw_oriented = os.path.join(tmp_folder, "oriented_embed_raw.pdb")
+        stage1_input = os.path.join(tmp_folder, "double_span_stage1_input.pdb")
+        stage2_raw = os.path.join(tmp_folder, "double_span_stage2_raw.pdb")
+        presuper = os.path.join(tmp_folder, "double_span_presuper.pdb")
+        aligned_raw = os.path.join(tmp_folder, "double_span_aligned_raw.pdb")
 
         if os.path.exists(output) and not overwrite:
-            logger.info("pymemembed output exists at %s; skipping pymemembed execution.", output)
-            return output
+            if double_span:
+                required = [raw_oriented, stage1_input, stage2_raw, presuper, aligned_raw]
+                if all(os.path.exists(path) for path in required):
+                    logger.info("pymemembed double-span output exists at %s; skipping pymemembed execution.", output)
+                    return (output, self._pymemembed_double_span_z_offset(stage2_raw))
+            else:
+                logger.info("pymemembed output exists at %s; skipping pymemembed execution.", output)
+                return output
         pymemembed = self._require_pymemembed_module()
         pymemembed_wrapper = importlib.import_module(pymemembed.__name__ + ".memembed_wrapper")
 
@@ -2741,53 +2918,17 @@ class PACKMOLMemgen(object):
         else:
             self.created.append(tmp_folder)
 
-        method = self._pymemembed_method()
-        chains = self._pymemembed_chains_list()
-        if verbose:
-            logger.info(
-                "Running pymemembed: method=%s threads=%s span=%s barrel=%s",
-                method,
-                self.pymemembed_threads,
-                self.pymemembed_force_span,
-                self.pymemembed_barrel,
-            )
-        if method == "ga_multi":
-            result = pymemembed_wrapper.run_ga_multi(
-                pdb_file=pdb,
-                output_file=raw_oriented,
-                beta_barrel=self.pymemembed_barrel,
-                threads=self.pymemembed_threads,
-                n_runs=self.pymemembed_runs,
-                max_calls_per_run=self.pymemembed_max_calls,
-                n_ter=n_ter,
-                force_span=self.pymemembed_force_span,
-                chains=chains,
-                verbose=verbose,
-            )
-        else:
-            result = pymemembed.memembed_align(
-                pdb_file=pdb,
-                output_file=raw_oriented,
-                method=method,
-                threads=self.pymemembed_threads,
-                max_calls=self.pymemembed_max_calls,
-                beta_barrel=self.pymemembed_barrel,
-                force_span=self.pymemembed_force_span,
-                chains=chains,
-                n_ter=n_ter,
-                verbose=verbose,
-                polar_headgroups=self.pymemembed_polar_headgroups,
-            )
+        result = self._run_pymemembed_orientation(
+            pymemembed,
+            pymemembed_wrapper,
+            pdb,
+            raw_oriented,
+            n_ter,
+            verbose=verbose,
+        )
         if not os.path.exists(raw_oriented):
             logger.critical("CRITICAL:\n  pymemembed output not found at %s", raw_oriented)
             exit()
-        self._write_aligned_pdb_from_reference(
-            pdb,
-            raw_oriented,
-            output,
-            preserve_records=preserve_records,
-            tool_name="pymemembed",
-        )
         log_path = os.path.join(tmp_folder, "pymemembed.log")
         pymemembed_wrapper.write_memembed_log(
             log_path,
@@ -2795,6 +2936,28 @@ class PACKMOLMemgen(object):
             str(self.pymemembed_search),
             self.pymemembed_barrel,
             n_ter,
+        )
+        if double_span:
+            z_offset = self._pymemembed_double_span_align(
+                pdb,
+                raw_oriented,
+                tmp_folder,
+                output,
+                pymemembed,
+                pymemembed_wrapper,
+                n_ter,
+                verbose=verbose,
+                preserve_records=preserve_records,
+            )
+            if keepligs and verbose:
+                logger.info("Ligand/HETATM records were preserved by rigidly transforming the original coordinates.")
+            return (output, z_offset)
+        self._write_aligned_pdb_from_reference(
+            pdb,
+            raw_oriented,
+            output,
+            preserve_records=preserve_records,
+            tool_name="pymemembed",
         )
         if keepligs and verbose:
             logger.info("Ligand/HETATM records were preserved by rigidly transforming the original coordinates.")
