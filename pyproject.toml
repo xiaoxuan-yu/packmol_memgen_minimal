@@ -33,14 +33,16 @@ dynamic = ["version"]
 [project.optional-dependencies]
 packmol = ["packmol==21.1.14"]
 mempro = ["mempro"]
+pymemembed = ["numba"]
 martini = ["mdtraj", "vermouth"]
-full = ["packmol==21.1.4", "mempro", "vermouth", "mdtraj"]
+full = ["packmol==21.1.4", "mempro", "numba", "vermouth", "mdtraj"]
 
 [project.urls]
 Homepage = "https://github.com/xiaoxuan-yu/packmol_memgen_minimal/"
 
 [project.scripts]
 packmol-memgen = "packmol_memgen.main:cli"
+pymemembed = "packmol_memgen.lib.pymemembed.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["packmol_memgen"]

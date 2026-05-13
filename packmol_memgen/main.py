@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from __future__ import print_function
-import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib.util, re
+import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib, importlib.util, re
 from pathlib import Path
 import pandas as pd
 import tarfile
@@ -89,7 +89,7 @@ def _prepend_uv_tool_dirs_to_path():
 _prepend_uv_tool_dirs_to_path()
 
 
-explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. By default the input protein records are preserved and protonation is skipped; orientation can still be applied using MemPrO. The user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
+explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. By default the input protein records are preserved and protonation is skipped; orientation can still be applied using MemPrO by default or the optional pymemembed backend. The user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
 
  If you use this script, please cite the tools reported at the end of the run:
 
@@ -106,7 +106,14 @@ explanation = explanation+"-"*int(os.environ['COLUMNS'])
 
 short_help = "-h" in sys.argv
 
+
+class _StoreOrientationBackend(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "orientation_backend_explicit", True)
+
 parser = argparse.ArgumentParser(prog="packmol-memgen", description = explanation, add_help=False, formatter_class=RawDescriptionHelpFormatter)
+parser.set_defaults(orientation_backend="mempro", orientation_backend_explicit=False)
 parser.add_argument("-h",     action="help", help="prints this help message and exits" if short_help else "prints a short help message and exits")
 parser.add_argument("--help", action="help", help="prints an extended help message and exits" if short_help else "prints this help message and exits")
 parser.add_argument("--available_lipids",action="store_true",     help="list of available lipids and corresponding charges")
@@ -172,11 +179,12 @@ inputs.add_argument("--solute_charge", action="append",            help=argparse
 inputs.add_argument("--solute_inmem",  action="store_true",        help=argparse.SUPPRESS if short_help else "solute should be added to membrane fraction")
 inputs.add_argument("--solute_prot_dist",  type=float,             help=argparse.SUPPRESS if short_help else "establishes a cylindrical restraint using the protein xy radius and z height + the input value. A value of 0 will use the protein radius. By default, no restraint is imposed.")
 
-embedopt = parser.add_argument_group('MemPrO options')
-embedopt.add_argument("--preoriented",  action="store_true",          help="use this flag if the protein has been previosuly oriented and you want to avoid running MemPrO (i.e. from OPM)")
+embedopt = parser.add_argument_group('Orientation options')
+embedopt.add_argument("--orientation-backend", action=_StoreOrientationBackend, choices=["mempro", "pymemembed", "preoriented"], help=argparse.SUPPRESS if short_help else "orientation backend: mempro (default), pymemembed, or preoriented")
+embedopt.add_argument("--preoriented",  action="store_true",          help="use this flag if the protein has been previosuly oriented and you want to avoid running orientation entirely (i.e. from OPM)")
 embedopt.add_argument("--double_span",  action="store_true",          help=argparse.SUPPRESS) #"orient protein twice, assuming it spans two membrane bilayer")
 embedopt.add_argument("--n_ter",        action="append",              help=argparse.SUPPRESS if short_help else "'in' or 'out'. By default proteins are oriented with the n_ter oriented 'in' (or 'down'). relevant for multi layer system. If defined for one protein, it has to be defined for all of them, following previous order")
-embedopt.add_argument("--keepligs",     action="store_true",          help=argparse.SUPPRESS if short_help else "MemPrO ignores HETATM records; use with care if you rely on ligands")
+embedopt.add_argument("--keepligs",     action="store_true",          help=argparse.SUPPRESS if short_help else "preserve ligand/HETATM records across orientation; required mainly for backends that do not rewrite them directly")
 embedopt.add_argument("--mempro",type=str,                            help=argparse.SUPPRESS if short_help else "Path to MemPrO executable or MemPrO_Script.py")
 embedopt.add_argument("--mempro_grid",type=int,default=36,            help=argparse.SUPPRESS if short_help else "MemPrO grid size (-ng)")
 embedopt.add_argument("--mempro_iters",type=int,default=150,          help=argparse.SUPPRESS if short_help else "MemPrO minimization iterations (-ni)")
@@ -186,6 +194,14 @@ embedopt.add_argument("--mempro_curvature", action="store_true",      help=argpa
 embedopt.add_argument("--no-keep-mempro", action="store_false", dest="keep_mempro", help=argparse.SUPPRESS if short_help else "remove MemPrO outputs and working folder during cleanup")
 embedopt.add_argument("--insane_build_ranks",type=int, dest="build_system", help=argparse.SUPPRESS if short_help else "Build a MD ready CG-system for ranks < n via MemPrO and Insane4MemPrO.")
 embedopt.add_argument("--insane_args",type=str, dest="build_arguments", help=argparse.SUPPRESS if short_help else "Arguments passed to Insane4MemPrO via MemPrO (-bd_args)")
+embedopt.add_argument("--pymemembed-threads", type=int, default=1,    help=argparse.SUPPRESS if short_help else "pymemembed parallel threads for GA-based searches")
+embedopt.add_argument("--pymemembed-search", type=int, default=0, choices=[0,1,2,3], help=argparse.SUPPRESS if short_help else "pymemembed search mode: 0=GA, 1=grid, 2=direct, 3=multi-GA")
+embedopt.add_argument("--pymemembed-barrel", action="store_true",     help=argparse.SUPPRESS if short_help else "use pymemembed beta-barrel potential")
+embedopt.add_argument("--pymemembed-force-span", action="store_true", help=argparse.SUPPRESS if short_help else "enforce a membrane-spanning orientation in pymemembed")
+embedopt.add_argument("--pymemembed-chains", type=str,                help=argparse.SUPPRESS if short_help else "comma-separated chain list to pass to pymemembed")
+embedopt.add_argument("--pymemembed-polar-headgroups", action="store_true", help=argparse.SUPPRESS if short_help else "retain ±24 A polar headgroup markers in pymemembed raw working output")
+embedopt.add_argument("--pymemembed-max-calls", type=int, default=1000000, help=argparse.SUPPRESS if short_help else "maximum pymemembed function evaluations per optimization run")
+embedopt.add_argument("--pymemembed-runs", type=int, default=5,       help=argparse.SUPPRESS if short_help else "number of GA runs used by pymemembed search mode 3")
 
 packmolopt = parser.add_argument_group('PACKMOL options')
 packmolopt.add_argument("--nloop",       type=int,default=20,         help=argparse.SUPPRESS if short_help else "number of nloops for GENCAN routine in PACKMOL. PACKMOL MEMGEN uses 20 by default; you might consider increasing the number to improve packing. Increasing the number of components requires more GENCAN loops.")
@@ -244,6 +260,166 @@ class PACKMOLMemgen(object):
         if any(c.isspace() for c in path):
             return f"\"{path}\""
         return path
+
+    def _orientation_label(self, n_ter):
+        label = n_ter or ""
+        if label and not label.startswith("_"):
+            label = "_" + label
+        return label
+
+    def _has_nondefault_cli_value(self, dest):
+        return getattr(self, dest, None) != parser.get_default(dest)
+
+    def _normalize_orientation_backend(self):
+        backend = getattr(self, "orientation_backend", parser.get_default("orientation_backend"))
+        explicit = bool(getattr(self, "orientation_backend_explicit", False))
+        if self.preoriented and explicit and backend != "preoriented":
+            logger.critical(
+                "CRITICAL:\n  --preoriented conflicts with --orientation-backend %s. "
+                "Use only one selection mechanism, or set --orientation-backend preoriented.",
+                backend,
+            )
+            exit()
+        if self.preoriented and not explicit:
+            backend = "preoriented"
+        self.orientation_backend = backend
+        if backend == "preoriented":
+            self.preoriented = True
+
+    def _validate_orientation_backend_options(self):
+        backend = self.orientation_backend
+        mempro_only = {
+            "mempro": "--mempro",
+            "mempro_grid": "--mempro_grid",
+            "mempro_iters": "--mempro_iters",
+            "mempro_rank": "--mempro_rank",
+            "mempro_args": "--mempro_args",
+            "mempro_curvature": "--mempro_curvature",
+            "build_system": "--insane_build_ranks",
+            "build_arguments": "--insane_args",
+        }
+        pymemembed_only = {
+            "pymemembed_threads": "--pymemembed-threads",
+            "pymemembed_search": "--pymemembed-search",
+            "pymemembed_barrel": "--pymemembed-barrel",
+            "pymemembed_force_span": "--pymemembed-force-span",
+            "pymemembed_chains": "--pymemembed-chains",
+            "pymemembed_polar_headgroups": "--pymemembed-polar-headgroups",
+            "pymemembed_max_calls": "--pymemembed-max-calls",
+            "pymemembed_runs": "--pymemembed-runs",
+        }
+
+        if backend != "mempro":
+            invalid = [flag for dest, flag in mempro_only.items() if self._has_nondefault_cli_value(dest)]
+            if invalid:
+                logger.critical(
+                    "CRITICAL:\n  %s only valid with --orientation-backend mempro.",
+                    ", ".join(invalid),
+                )
+                exit()
+        if backend != "pymemembed":
+            invalid = [flag for dest, flag in pymemembed_only.items() if self._has_nondefault_cli_value(dest)]
+            if invalid:
+                logger.critical(
+                    "CRITICAL:\n  %s only valid with --orientation-backend pymemembed.",
+                    ", ".join(invalid),
+                )
+                exit()
+        if backend == "pymemembed" and self.double_span:
+            logger.critical(
+                "CRITICAL:\n  --double_span is not supported with --orientation-backend pymemembed."
+            )
+            exit()
+        if backend == "pymemembed" and self.martini and self.build_system is not None:
+            logger.critical(
+                "CRITICAL:\n  --insane_build_ranks is only supported with --orientation-backend mempro."
+            )
+            exit()
+        if backend == "pymemembed" and self.build_arguments:
+            logger.critical(
+                "CRITICAL:\n  --insane_args is only supported with --orientation-backend mempro."
+            )
+            exit()
+        if backend == "pymemembed" and self.pymemembed_threads < 1:
+            logger.critical("CRITICAL:\n  --pymemembed-threads must be >= 1.")
+            exit()
+        if backend == "pymemembed" and self.pymemembed_max_calls < 1:
+            logger.critical("CRITICAL:\n  --pymemembed-max-calls must be >= 1.")
+            exit()
+        if backend == "pymemembed" and self.pymemembed_runs < 1:
+            logger.critical("CRITICAL:\n  --pymemembed-runs must be >= 1.")
+            exit()
+
+    def _resolve_mempro_command(self):
+        mempro_cmd = self.mempro
+        if mempro_cmd is None:
+            mempro_cmd = (
+                shutil.which("mempro")
+                or shutil.which("MemPrO")
+                or shutil.which("MemPro")
+            )
+        if mempro_cmd:
+            self.mempro = mempro_cmd
+        else:
+            self.mempro = False
+        return self.mempro
+
+    def _require_pymemembed_module(self):
+        for module_name in ("lib.pymemembed", "packmol_memgen.lib.pymemembed"):
+            try:
+                return importlib.import_module(module_name)
+            except ModuleNotFoundError as exc:
+                if exc.name == "numba":
+                    logger.critical(
+                        "CRITICAL:\n  pymemembed requires numba. "
+                        "Install it with: pip install packmol-memgen-minimal[pymemembed]"
+                    )
+                    exit()
+                if exc.name not in {module_name, module_name.split(".")[0]}:
+                    raise
+            except ImportError:
+                continue
+        logger.critical("CRITICAL:\n  pymemembed backend could not be imported from the packaged sources.")
+        exit()
+
+    def _pymemembed_method(self):
+        return {0: "ga", 1: "grid", 2: "direct", 3: "ga_multi"}[self.pymemembed_search]
+
+    def _pymemembed_chains_list(self):
+        if not self.pymemembed_chains:
+            return None
+        return [chain.strip() for chain in self.pymemembed_chains.split(",") if chain.strip()]
+
+    def _orient_protein(self, pdb, verbose=False, overwrite=False, n_ter="in", preserve_records=False):
+        if self.preoriented or self.orientation_backend == "preoriented":
+            return pdb
+        if self.orientation_backend == "mempro":
+            logger.debug("Orienting the protein using MemPrO...")
+            self._used_tools.add("mempro")
+            if self.martini:
+                self._used_tools.add("martini")
+            return self.mempro_align(
+                pdb,
+                keepligs=self.keepligs,
+                verbose=verbose,
+                overwrite=overwrite,
+                n_ter=n_ter,
+                double_span=self.double_span,
+                preserve_records=preserve_records,
+            )
+        if self.orientation_backend == "pymemembed":
+            logger.debug("Orienting the protein using pymemembed...")
+            self._used_tools.add("pymemembed")
+            return self.pymemembed_align(
+                pdb,
+                keepligs=self.keepligs,
+                verbose=verbose,
+                overwrite=overwrite,
+                n_ter=n_ter,
+                preserve_records=preserve_records,
+            )
+        logger.critical("CRITICAL:\n  Unknown orientation backend: %s", self.orientation_backend)
+        exit()
 
     def prepare(self):
  
@@ -409,6 +585,9 @@ class PACKMOLMemgen(object):
 
         if self.martini:
             self._warn_martini_unsupported()
+
+        self._normalize_orientation_backend()
+        self._validate_orientation_backend_options()
 
         if self.curv_radius is not None:
             self.curvature = 1/self.curv_radius
@@ -639,25 +818,15 @@ class PACKMOLMemgen(object):
                     logger.error("ERROR:\n    Either the options were wrongly used or the file "+pdb+" doesn't exist!")
                     exit()
     
-        mempro_cmd = self.mempro
-        if mempro_cmd is None:
-            mempro_cmd = (
-                shutil.which("mempro")
-                or shutil.which("MemPrO")
-                or shutil.which("MemPro")
-            )
-        if mempro_cmd:
-            self.mempro = mempro_cmd
-        else:
-            self.mempro = ""
-    
-        if not self.mempro:
-            miss = (
-                "MemPrO not found. Protein orientation will not be available unless --preoriented is set.\n"
-                "Install it with: pip install packmol-memgen-minimal[mempro]"
-            )
-            logger.warning("\n"+len(miss)*"#"+"\n"+miss+"\n"+len(miss)*"#"+"\n")
-            self.mempro = False
+        if self.orientation_backend == "mempro":
+            if not self._resolve_mempro_command():
+                miss = (
+                    "MemPrO not found. Protein orientation will not be available unless --preoriented is set.\n"
+                    "Install it with: pip install packmol-memgen-minimal[mempro]"
+                )
+                logger.warning("\n"+len(miss)*"#"+"\n"+miss+"\n"+len(miss)*"#"+"\n")
+        elif self.orientation_backend == "pymemembed" and not self.onlymembrane:
+            self._require_pymemembed_module()
             
         # logger.info(self.mempro if self.mempro else "MemPrO not used")
     
@@ -949,20 +1118,25 @@ class PACKMOLMemgen(object):
                     if self.martini and not self.martinized:
                         logger.debug("Running martinize2 for %s", pdb)
                         pdb = self._martinize2(pdb, overwrite=self.overwrite)
-                    if not self.preoriented and self.mempro:
+                    if self.orientation_backend != "preoriented":
+                        oriented = self._orient_protein(
+                            pdb,
+                            verbose=self.verbose,
+                            overwrite=self.overwrite,
+                            n_ter=self.n_ter[n],
+                            preserve_records=self.preserve_protein_records,
+                        )
                         if self.double_span:
-                            logger.debug("Attempting to orient double span protein using MemPrO...")
-                            self._used_tools.add("mempro")
-                            self._used_tools.add("martini")
-                            pdb, z_offset_ds = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], double_span=True, preserve_records=self.preserve_protein_records)
+                            pdb, z_offset_ds = oriented
                             z_offset_ds = np.abs(z_offset_ds)
                             pdb_ds = pdb
                         else:
-                            logger.debug("Orienting the protein using MemPrO...")
-                            self._used_tools.add("mempro")
-                            self._used_tools.add("martini")
-                            pdb = self.mempro_align(pdb,keepligs=self.keepligs,verbose=self.verbose,overwrite=self.overwrite,n_ter=self.n_ter[n], preserve_records=self.preserve_protein_records)
-                        if self.martini and self.build_system is not None:
+                            pdb = oriented
+                        if (
+                            self.orientation_backend == "mempro"
+                            and self.martini
+                            and self.build_system is not None
+                        ):
                             self._finalize_martini_build()
                     if self.keep_mempro:
                         self.created_mempro.append(pdb)
@@ -2394,10 +2568,11 @@ class PACKMOLMemgen(object):
         return result
 
     def mempro_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in", preserve_records=False):
-        output = self._local_output_path(pdb, n_ter + "_MEMPRO.pdb")
+        n_ter_label = self._orientation_label(n_ter)
+        output = self._local_output_path(pdb, n_ter_label + "_MEMPRO.pdb")
         pdb_base = os.path.basename(pdb)
         tmp_prefix = "" if self.keep_mempro else "_tmp_"
-        tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter + "_MEMPRO")
+        tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter_label + "_MEMPRO")
         out_dir = tmp_folder + os.path.sep
         info_path = os.path.join(tmp_folder, "Rank_1", "info_rank_1.txt")
         cg_dir = os.path.join(tmp_folder, "Rank_1", "CG_System_rank_1")
@@ -2540,6 +2715,91 @@ class PACKMOLMemgen(object):
             return (output, z_offset)
         return output
 
+    def pymemembed_align(self,pdb,keepligs=False,double_span=False,verbose=False,overwrite=False,n_ter="_in", preserve_records=False):
+        if double_span:
+            logger.critical(
+                "CRITICAL:\n  --double_span is not supported with --orientation-backend pymemembed."
+            )
+            exit()
+        n_ter_label = self._orientation_label(n_ter)
+        output = self._local_output_path(pdb, n_ter_label + "_PYMEMEMBED.pdb")
+        pdb_base = os.path.basename(pdb)
+        tmp_prefix = "" if self.keep_mempro else "_tmp_"
+        tmp_folder = self._out_path(tmp_prefix + pdb_base[:-4] + n_ter_label + "_PYMEMEMBED")
+        raw_oriented = os.path.join(tmp_folder, "oriented_embed_raw.pdb")
+
+        if os.path.exists(output) and not overwrite:
+            logger.info("pymemembed output exists at %s; skipping pymemembed execution.", output)
+            return output
+        pymemembed = self._require_pymemembed_module()
+        pymemembed_wrapper = importlib.import_module(pymemembed.__name__ + ".memembed_wrapper")
+
+        if not os.path.exists(tmp_folder):
+            os.mkdir(tmp_folder)
+        if self.keep_mempro:
+            self.created_mempro.append(tmp_folder)
+        else:
+            self.created.append(tmp_folder)
+
+        method = self._pymemembed_method()
+        chains = self._pymemembed_chains_list()
+        if verbose:
+            logger.info(
+                "Running pymemembed: method=%s threads=%s span=%s barrel=%s",
+                method,
+                self.pymemembed_threads,
+                self.pymemembed_force_span,
+                self.pymemembed_barrel,
+            )
+        if method == "ga_multi":
+            result = pymemembed_wrapper.run_ga_multi(
+                pdb_file=pdb,
+                output_file=raw_oriented,
+                beta_barrel=self.pymemembed_barrel,
+                threads=self.pymemembed_threads,
+                n_runs=self.pymemembed_runs,
+                max_calls_per_run=self.pymemembed_max_calls,
+                n_ter=n_ter,
+                force_span=self.pymemembed_force_span,
+                chains=chains,
+                verbose=verbose,
+            )
+        else:
+            result = pymemembed.memembed_align(
+                pdb_file=pdb,
+                output_file=raw_oriented,
+                method=method,
+                threads=self.pymemembed_threads,
+                max_calls=self.pymemembed_max_calls,
+                beta_barrel=self.pymemembed_barrel,
+                force_span=self.pymemembed_force_span,
+                chains=chains,
+                n_ter=n_ter,
+                verbose=verbose,
+                polar_headgroups=self.pymemembed_polar_headgroups,
+            )
+        if not os.path.exists(raw_oriented):
+            logger.critical("CRITICAL:\n  pymemembed output not found at %s", raw_oriented)
+            exit()
+        self._write_aligned_pdb_from_reference(
+            pdb,
+            raw_oriented,
+            output,
+            preserve_records=preserve_records,
+            tool_name="pymemembed",
+        )
+        log_path = os.path.join(tmp_folder, "pymemembed.log")
+        pymemembed_wrapper.write_memembed_log(
+            log_path,
+            result,
+            str(self.pymemembed_search),
+            self.pymemembed_barrel,
+            n_ter,
+        )
+        if keepligs and verbose:
+            logger.info("Ligand/HETATM records were preserved by rigidly transforming the original coordinates.")
+        return output
+
     def _count_pdb_atoms(self, pdb_path):
         count = 0
         with open(pdb_path, "r") as handle:
@@ -2563,13 +2823,23 @@ class PACKMOLMemgen(object):
                     output.write(line)
 
     def _write_mempro_aligned_pdb(self, source_pdb, oriented_pdb, output_pdb, preserve_records=False):
+        self._write_aligned_pdb_from_reference(
+            source_pdb,
+            oriented_pdb,
+            output_pdb,
+            preserve_records=preserve_records,
+            tool_name="MemPrO",
+        )
+
+    def _write_aligned_pdb_from_reference(self, source_pdb, oriented_pdb, output_pdb, preserve_records=False, tool_name="orientation"):
         source_soup = pdbatoms.Soup(source_pdb)
         oriented_soup = pdbatoms.Soup(oriented_pdb)
         atoms_source = get_superposable_atoms(source_soup, [], ["CA"], standard=True)
         atoms_oriented = get_superposable_atoms(oriented_soup, [], ["CA"], standard=True)
         if len(atoms_source) != len(atoms_oriented) or len(atoms_source) == 0:
             logger.critical(
-                "CRITICAL:\n  Could not derive a MemPrO transform from standard CA atoms (%s vs %s).",
+                "CRITICAL:\n  Could not derive a %s transform from standard CA atoms (%s vs %s).",
+                tool_name,
                 len(atoms_source),
                 len(atoms_oriented),
             )
@@ -2593,7 +2863,7 @@ class PACKMOLMemgen(object):
             source_soup.transform(transform_source_to_oriented)
             source_soup.transform(v3.translation(center_oriented))
             source_soup.write_pdb(output_pdb)
-        logger.debug("Applied MemPrO transform to original PDB (standard-residue CA RMSD %.4f).", rmsd)
+        logger.debug("Applied %s transform to original PDB (standard-residue CA RMSD %.4f).", tool_name, rmsd)
 
     def _parse_mempro_global_curvature(self, info_path):
         if not os.path.exists(info_path):
@@ -2848,6 +3118,10 @@ class PACKMOLMemgen(object):
                 "MemPrO: A Predictive Tool for Membrane Protein Orientation. "
                 "J. Chem. Theory Comput. 2025. https://doi.org/10.1021/acs.jctc.5c01433."
             ],
+            "pymemembed": [
+                "Vendored pymemembed backend from AmberTools 26 "
+                "(Python/Numba MEMEMBED implementation used for membrane orientation)."
+            ],
             "martini": [
                 "Souza, P. C. T.; Alessandri, R.; Barnoud, J.; et al. "
                 "Martini 3: a general purpose force field for coarse-grained molecular dynamics. "
@@ -2862,13 +3136,14 @@ class PACKMOLMemgen(object):
                 "Nucleic Acids Res. 2004, 32 (Web Server issue), W665–W667. https://doi.org/10.1093/nar/gkh381.",
             ],
         }
-        used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "martini", "pdb2pqr") if tool in self._used_tools]
+        used = [tool for tool in ("packmol-memgen", "packmol", "mempro", "pymemembed", "martini", "pdb2pqr") if tool in self._used_tools]
         if not used:
             return
         tool_labels = {
             "packmol-memgen": "PACKMOL-Memgen",
             "packmol": "PACKMOL",
             "mempro": "MemPrO",
+            "pymemembed": "pymemembed",
             "martini": "Martini",
             "pdb2pqr": "PDB2PQR",
         }
