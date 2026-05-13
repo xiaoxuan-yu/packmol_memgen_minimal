@@ -20,10 +20,11 @@ preserved below; this section summarizes the changes and current behavior.
   package does not bundle PACKMOL; it is expected to be available on PATH. For
   convenience, it can be installed via an optional dependency (extra).
 
-- Membrane orientation: membrane alignment/orientation is performed via MemPrO
-  (Python + JAX) instead of the upstream memembed/ppm3 workflow. MemPrO is invoked
-  via subprocess as an external command-line tool. MemPrO is not bundled into this
-  package but can be installed via an optional dependency for convenience.
+- Membrane orientation: the default backend is MemPrO (Python + JAX), invoked
+  via subprocess as an external command-line tool. An optional vendored
+  ``pymemembed`` backend from AmberTools 26 is also available for flat-membrane
+  orientation. MemPrO remains the default and is still required for
+  ``--mempro_curvature``, ``--insane_build_ranks`` and ``--insane_args``.
 
 - Protonation: protonation uses pdb2pqr when needed.
 - Output location: use ``--outdir DIR`` to write all generated files (final ``--output``, ``--log``, ``--packlog`` scripts/logs, intermediate structures) into a single directory.
@@ -71,6 +72,10 @@ With optional mempro as a dependency:
 
 ``pip install packmol-memgen-minimal[mempro]``
 
+With optional pymemembed backend support:
+
+``pip install packmol-memgen-minimal[pymemembed]``
+
 With both optional dependencies:
 
 ``pip install packmol-memgen-minimal[full]``
@@ -82,6 +87,50 @@ You may prefer mordern Python packaging tools such as `uv` to install
 extras are supported in `uv` as well. Other tools may work similarly.
 
 
+####################
+Orientation Backends
+####################
+
+The CLI now exposes a unified selector:
+
+``--orientation-backend mempro|pymemembed|preoriented``
+
+- Default: ``mempro``
+- Compatibility shortcut: ``--preoriented`` still works and maps internally to
+  ``--orientation-backend preoriented``
+- Conflict rule: if ``--preoriented`` is combined with an explicit
+  ``--orientation-backend`` other than ``preoriented``, the run fails instead
+  of silently picking one
+
+Backend-specific behavior:
+
+- ``mempro``: default and recommended backend; supports the existing
+  ``--mempro*`` options plus ``--mempro_curvature``,
+  ``--insane_build_ranks`` and ``--insane_args``
+- ``pymemembed``: optional Python/Numba MEMEMBED implementation vendored from
+  AmberTools 26; used through direct module calls rather than a subprocess;
+  intended only for orientation and oriented-PDB output
+- ``preoriented``: skips orientation entirely
+
+``pymemembed`` options:
+
+- ``--pymemembed-threads``
+- ``--pymemembed-search``
+- ``--pymemembed-barrel``
+- ``--pymemembed-force-span``
+- ``--pymemembed-chains``
+- ``--pymemembed-polar-headgroups``
+- ``--pymemembed-max-calls``
+- ``--pymemembed-runs``
+
+Current limitations of the ``pymemembed`` backend:
+
+- no support for ``--double_span``
+- no support for MemPrO-only curvature or Martini build options
+- final oriented PDBs are rewritten from the original coordinates so that
+  existing record-preservation behavior remains consistent with the MemPrO path
+
+
 ############
 LICENSE NOTE
 ############
@@ -91,6 +140,9 @@ This fork is distributed under GPL-2.0-only, inherited from the upstream project
 MemPrO is an optional external command-line tool distributed under the GNU GPL v3.
 This project interacts with MemPrO via subprocess calls; MemPrO is not bundled into
 this package and its license applies to MemPrO itself.
+
+The vendored ``pymemembed`` sources originate from AmberTools 26
+(``packmol_memgen/lib/pymemembed``) and require ``numba`` at runtime.
 
 The martini force field parameter file `packmol_memgen/data/martini_v3.0.0.itp` is 
 sourced from https://github.com/Martini-Force-Field-Initiative/martini-forcefields 
@@ -118,6 +170,7 @@ Optional external tools (installed separately; invoked via subprocess):
 
 - PACKMOL (MIT License, https://github.com/m3g/packmol)
 - MemPrO (GNU GPL v3, https://github.com/ShufflerBardOnTheEdge/MemPrO)
+- pymemembed (vendored from AmberTools 26; requires numba)
 
 Additional utilities used by this workflow:
 
