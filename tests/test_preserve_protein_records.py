@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import types
 from pathlib import Path
 
@@ -160,10 +161,10 @@ def test_rewrite_and_protonate_flags_restore_legacy_behavior(tmp_path: Path):
     assert args.notprotonate is True
 
 
-def test_default_orientation_backend_is_mempro():
+def test_default_orientation_backend_is_pymemembed():
     args = parser.parse_args([])
 
-    assert args.orientation_backend == "mempro"
+    assert args.orientation_backend == "pymemembed"
     assert args.orientation_backend_explicit is False
 
 
@@ -193,6 +194,91 @@ def test_pymemembed_allows_double_span():
     pmg = build_pmg(["--orientation-backend", "pymemembed", "--double_span"])
     pmg._normalize_orientation_backend()
     pmg._validate_orientation_backend_options()
+
+
+def test_martini_defaults_to_mempro_backend_when_not_explicit():
+    pmg = build_pmg(["--martini"])
+    pmg._normalize_orientation_backend()
+
+    assert pmg.orientation_backend == "mempro"
+
+
+def test_martini_rejects_explicit_pymemembed_backend():
+    pmg = build_pmg(["--martini", "--orientation-backend", "pymemembed"])
+
+    with pytest.raises(SystemExit):
+        pmg._normalize_orientation_backend()
+
+
+def test_mempro_flag_without_explicit_backend_selects_mempro():
+    pmg = build_pmg(["--mempro_curvature"])
+    pmg._normalize_orientation_backend()
+
+    assert pmg.orientation_backend == "mempro"
+
+
+def test_pymemembed_config_translation_matches_adapter_contract():
+    pmg = build_pmg(
+        [
+            "--orientation-backend",
+            "pymemembed",
+            "--pymemembed-search",
+            "3",
+            "--pymemembed-barrel",
+            "--pymemembed-force-span",
+            "--pymemembed-chains",
+            "A,B",
+            "--pymemembed-threads",
+            "7",
+            "--pymemembed-max-calls",
+            "1234",
+            "--pymemembed-runs",
+            "9",
+            "--pymemembed-polar-headgroups",
+        ]
+    )
+
+    cfg = pmg._build_pymemembed_config(n_ter="out")
+
+    assert cfg.search_mode == 3
+    assert cfg.method == "ga_multi"
+    assert cfg.n_ter == "out"
+    assert cfg.beta_barrel is True
+    assert cfg.force_span is True
+    assert cfg.chains == ("A", "B")
+    assert cfg.threads == 7
+    assert cfg.max_calls == 1234
+    assert cfg.n_runs == 9
+    assert cfg.polar_headgroups is True
+
+
+def test_pymemembed_threads_default_matches_contract():
+    pmg = build_pmg(["--orientation-backend", "pymemembed"])
+
+    cfg = pmg._build_pymemembed_config(n_ter="in")
+
+    assert pmg.pymemembed_threads == 4
+    assert cfg.threads == 4
+
+
+def test_upstream_memembed_aliases_map_to_pymemembed_config():
+    pmg = build_pmg(
+        [
+            "--orientation-backend",
+            "pymemembed",
+            "--mem_opt",
+            "2",
+            "--barrel",
+        ]
+    )
+
+    cfg = pmg._build_pymemembed_config(n_ter="in")
+
+    assert pmg.pymemembed_search == 2
+    assert pmg.pymemembed_barrel is True
+    assert cfg.search_mode == 2
+    assert cfg.method == "direct"
+    assert cfg.beta_barrel is True
 
 
 @pytest.mark.parametrize(
@@ -593,3 +679,63 @@ def test_generic_alignment_writer_preserves_records_with_transformed_coordinates
     assert "      13.496" in output
     assert " 1010 " not in output
     assert "       2.200   3.800   2.700" not in output
+
+
+def test_packmol_no_water_writes_counts_report_without_solvent_blocks(tmp_path: Path):
+    pdb_path = tmp_path / "input.pdb"
+    pdb_path.write_text(PDB_TEXT)
+
+    pmg = build_pmg(
+        [
+            "--solvate",
+            "--notrun",
+            "--noxy_cen",
+            "--packmol-no-water",
+            "--salt",
+            "-p",
+            str(pdb_path),
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    pmg.prepare()
+
+    report_path = Path(pmg.packing_counts_path)
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    assert report["mode"] == "packmol_no_water"
+    assert report["totals"]["water_count"] > 0
+    assert report["totals"]["cation_count"] >= 0
+    assert report["totals"]["anion_count"] >= 0
+    assert len(report["partitions"]) == 1
+    assert report["partitions"][0]["region_role"] == "combined_partition"
+    assert "WAT.pdb" not in pmg.contents
+
+
+def test_packmol_no_water_reports_multiple_bilayer_partitions(tmp_path: Path):
+    pmg = build_pmg(
+        [
+            "--notrun",
+            "--packmol-no-water",
+            "--distxy_fix",
+            "60",
+            "--lipids",
+            "DOPC",
+            "--lipids",
+            "DOPC",
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    pmg.prepare()
+
+    report = json.loads(Path(pmg.packing_counts_path).read_text())
+    assert len(report["partitions"]) == 4
+    assert [partition["id"] for partition in report["partitions"]] == [
+        "bilayer_0_lower_partition",
+        "bilayer_0_upper_partition",
+        "bilayer_1_lower_partition",
+        "bilayer_1_upper_partition",
+    ]

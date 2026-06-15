@@ -19,7 +19,7 @@ except ModuleNotFoundError as exc:
     if exc.name == "numba":
         print(
             "Error: pymemembed requires numba. Install it with: "
-            "pip install packmol-memgen-minimal[pymemembed]",
+            "pip install packmol-memgen-minimal",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -45,8 +45,8 @@ def main():
                         help='Force membrane spanning')
     parser.add_argument('-p', '--polar', action='store_true',
                         help='Draw lines representing polar head groups (±24 Å markers)')
-    parser.add_argument('-a', '--threads', type=int, default=1,
-                        help='Number of threads (default: 1)')
+    parser.add_argument('-a', '--threads', type=int, default=4,
+                        help='Number of threads (default: 4)')
     parser.add_argument('-c', '--chains', default=None,
                         help='Comma-separated chain list (e.g., A,B)')
     parser.add_argument('-e', '--energy-only', action='store_true',

@@ -73,7 +73,7 @@ def memembed_align_replacement(self, pdb, keepligs=False, double_span=False,
     method = method_map.get(opt, "ga_multi")
 
     # Determine number of threads
-    threads = getattr(self, 'cpus', 1)
+    threads = getattr(self, 'cpus', 4)
 
     # Run optimization
     if verbose:
@@ -398,7 +398,7 @@ def handle_double_span(self, pdb, output, barrel, n_ter, opt, verbose):
         output_file="temp2.pdb",
         method="ga" if opt in ["0", "3"] else "grid" if opt == "1" else "direct",
         beta_barrel=barrel,
-        threads=getattr(self, 'cpus', 1),
+        threads=getattr(self, 'cpus', 4),
         max_calls=1000000,
         n_ter=n_ter,
         verbose=verbose

@@ -20,10 +20,10 @@ preserved below; this section summarizes the changes and current behavior.
   package does not bundle PACKMOL; it is expected to be available on PATH. For
   convenience, it can be installed via an optional dependency (extra).
 
-- Membrane orientation: the default backend is MemPrO (Python + JAX), invoked
-  via subprocess as an external command-line tool. An optional vendored
-  ``pymemembed`` backend from AmberTools 26 is also available for flat-membrane
-  orientation. MemPrO remains the default and is still required for
+- Membrane orientation: the default backend is the vendored
+  ``pymemembed`` implementation from AmberTools 26 for flat-membrane
+  orientation. MemPrO (Python + JAX) remains available as an optional external
+  command-line tool and is required for ``--martini``,
   ``--mempro_curvature``, ``--insane_build_ranks`` and ``--insane_args``.
 
 - Protonation: protonation uses pdb2pqr when needed.
@@ -60,7 +60,8 @@ warnings: ``--distxy_fix``, ``--dist``, ``--dist_wat``, ``--xygauss``,
 ############
 Installation
 ############
-Minimal installation (this fork without PACKMOL or MemPrO):
+Minimal installation (default ``pymemembed`` backend included, but without
+PACKMOL or MemPrO):
 
 ``pip install packmol-memgen-minimal``
 
@@ -72,9 +73,9 @@ With optional mempro as a dependency:
 
 ``pip install packmol-memgen-minimal[mempro]``
 
-With optional pymemembed backend support:
+With Martini/MemPrO optional dependencies:
 
-``pip install packmol-memgen-minimal[pymemembed]``
+``pip install packmol-memgen-minimal[martini]``
 
 With both optional dependencies:
 
@@ -95,7 +96,7 @@ The CLI now exposes a unified selector:
 
 ``--orientation-backend mempro|pymemembed|preoriented``
 
-- Default: ``mempro``
+- Default: ``pymemembed``
 - Compatibility shortcut: ``--preoriented`` still works and maps internally to
   ``--orientation-backend preoriented``
 - Conflict rule: if ``--preoriented`` is combined with an explicit
@@ -104,12 +105,13 @@ The CLI now exposes a unified selector:
 
 Backend-specific behavior:
 
-- ``mempro``: default and recommended backend; supports the existing
-  ``--mempro*`` options plus ``--mempro_curvature``,
+- ``mempro``: optional extension backend; required for ``--martini`` and
+  supports the existing ``--mempro*`` options plus ``--mempro_curvature``,
   ``--insane_build_ranks`` and ``--insane_args``
 - ``pymemembed``: optional Python/Numba MEMEMBED implementation vendored from
   AmberTools 26; used through direct module calls rather than a subprocess;
-  intended only for flat-membrane orientation and oriented-PDB output
+  this is the default path for flat-membrane orientation and oriented-PDB
+  output
 - ``preoriented``: skips orientation entirely
 
 ``pymemembed`` options:
@@ -132,6 +134,14 @@ Current limitations of the ``pymemembed`` backend:
 - no support for MemPrO-only curvature or Martini build options
 - final oriented PDBs are rewritten from the original coordinates so that
   existing record-preservation behavior remains consistent with the MemPrO path
+
+PACKMOL dry mode:
+
+- ``--packmol-no-water`` skips solvent and ion placement in the generated
+  PACKMOL input while still computing and writing a
+  ``<output>.packing_counts.json`` report with per-partition solvent and ion
+  counts. This is intended for avoiding PACKMOL water overhead while preserving
+  the original partition-based accounting for multi-bilayer systems.
 
 
 ############

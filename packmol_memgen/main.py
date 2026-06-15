@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 from __future__ import print_function
-import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib, importlib.util, re
+import os, sys, math, subprocess, random, argparse, shutil, atexit, signal, logging, shlex, glob, importlib, importlib.util, re, json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 import pandas as pd
 import tarfile
@@ -89,7 +90,7 @@ def _prepend_uv_tool_dirs_to_path():
 _prepend_uv_tool_dirs_to_path()
 
 
-explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. By default the input protein records are preserved and protonation is skipped; orientation can still be applied using MemPrO by default or the optional pymemembed backend. The user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
+explanation = """The script creates an input file for PACKMOL for creating a bilayer system with a protein inserted in it. By default the input protein records are preserved and protonation is skipped; orientation uses the vendored pymemembed backend by default, while MemPrO remains available as an optional extension for curvature-aware and Martini workflows. The user is encouraged to check the input and output files carefully!  If the protein is preoriented, for example by using the PPM webserver from OPM (http://opm.phar.umich.edu/server.php), be sure to set the corresponding flag (--preoriented).  In some cases the packed system might crash during the first MD step. Changes in the box boundaries or repacking with --random as an argument might help.
 
  If you use this script, please cite the tools reported at the end of the run:
 
@@ -106,6 +107,48 @@ explanation = explanation+"-"*int(os.environ['COLUMNS'])
 
 short_help = "-h" in sys.argv
 
+MEMPRO_ONLY_FLAGS = {
+    "mempro": "--mempro",
+    "mempro_grid": "--mempro_grid",
+    "mempro_iters": "--mempro_iters",
+    "mempro_rank": "--mempro_rank",
+    "mempro_args": "--mempro_args",
+    "mempro_curvature": "--mempro_curvature",
+    "build_system": "--insane_build_ranks",
+    "build_arguments": "--insane_args",
+}
+
+PYMEMEMBED_ONLY_FLAGS = {
+    "pymemembed_threads": "--pymemembed-threads",
+    "pymemembed_search": "--pymemembed-search",
+    "pymemembed_barrel": "--pymemembed-barrel",
+    "pymemembed_force_span": "--pymemembed-force-span",
+    "pymemembed_chains": "--pymemembed-chains",
+    "pymemembed_polar_headgroups": "--pymemembed-polar-headgroups",
+    "pymemembed_max_calls": "--pymemembed-max-calls",
+    "pymemembed_runs": "--pymemembed-runs",
+}
+
+
+@dataclass(frozen=True)
+class PymemembedCallConfig:
+    search_mode: int = 0
+    method: str = "ga"
+    n_ter: str = "in"
+    beta_barrel: bool = False
+    force_span: bool = False
+    chains: tuple[str, ...] | None = None
+    threads: int = 4
+    max_calls: int = 1000000
+    n_runs: int = 5
+    polar_headgroups: bool = False
+
+    def as_report_dict(self):
+        data = asdict(self)
+        if self.chains is not None:
+            data["chains"] = list(self.chains)
+        return data
+
 
 class _StoreOrientationBackend(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -113,7 +156,7 @@ class _StoreOrientationBackend(argparse.Action):
         setattr(namespace, "orientation_backend_explicit", True)
 
 parser = argparse.ArgumentParser(prog="packmol-memgen", description = explanation, add_help=False, formatter_class=RawDescriptionHelpFormatter)
-parser.set_defaults(orientation_backend="mempro", orientation_backend_explicit=False)
+parser.set_defaults(orientation_backend="pymemembed", orientation_backend_explicit=False)
 parser.add_argument("-h",     action="help", help="prints this help message and exits" if short_help else "prints a short help message and exits")
 parser.add_argument("--help", action="help", help="prints an extended help message and exits" if short_help else "prints this help message and exits")
 parser.add_argument("--available_lipids",action="store_true",     help="list of available lipids and corresponding charges")
@@ -180,7 +223,7 @@ inputs.add_argument("--solute_inmem",  action="store_true",        help=argparse
 inputs.add_argument("--solute_prot_dist",  type=float,             help=argparse.SUPPRESS if short_help else "establishes a cylindrical restraint using the protein xy radius and z height + the input value. A value of 0 will use the protein radius. By default, no restraint is imposed.")
 
 embedopt = parser.add_argument_group('Orientation options')
-embedopt.add_argument("--orientation-backend", action=_StoreOrientationBackend, choices=["mempro", "pymemembed", "preoriented"], help=argparse.SUPPRESS if short_help else "orientation backend: mempro (default), pymemembed, or preoriented")
+embedopt.add_argument("--orientation-backend", action=_StoreOrientationBackend, choices=["mempro", "pymemembed", "preoriented"], help=argparse.SUPPRESS if short_help else "orientation backend: pymemembed (default), mempro, or preoriented")
 embedopt.add_argument("--preoriented",  action="store_true",          help="use this flag if the protein has been previosuly oriented and you want to avoid running orientation entirely (i.e. from OPM)")
 embedopt.add_argument("--double_span",  action="store_true",          help=argparse.SUPPRESS if short_help else "orient the protein twice to place two transmembrane regions into separate flat bilayers; supported for MemPrO and pymemembed flat-membrane orientation")
 embedopt.add_argument("--n_ter",        action="append",              help=argparse.SUPPRESS if short_help else "'in' or 'out'. By default proteins are oriented with the n_ter oriented 'in' (or 'down'). relevant for multi layer system. If defined for one protein, it has to be defined for all of them, following previous order")
@@ -194,9 +237,9 @@ embedopt.add_argument("--mempro_curvature", action="store_true",      help=argpa
 embedopt.add_argument("--no-keep-mempro", action="store_false", dest="keep_mempro", help=argparse.SUPPRESS if short_help else "remove MemPrO outputs and working folder during cleanup")
 embedopt.add_argument("--insane_build_ranks",type=int, dest="build_system", help=argparse.SUPPRESS if short_help else "Build a MD ready CG-system for ranks < n via MemPrO and Insane4MemPrO.")
 embedopt.add_argument("--insane_args",type=str, dest="build_arguments", help=argparse.SUPPRESS if short_help else "Arguments passed to Insane4MemPrO via MemPrO (-bd_args)")
-embedopt.add_argument("--pymemembed-threads", type=int, default=1,    help=argparse.SUPPRESS if short_help else "pymemembed parallel threads for GA-based searches")
-embedopt.add_argument("--pymemembed-search", type=int, default=0, choices=[0,1,2,3], help=argparse.SUPPRESS if short_help else "pymemembed search mode: 0=GA, 1=grid, 2=direct, 3=multi-GA")
-embedopt.add_argument("--pymemembed-barrel", action="store_true",     help=argparse.SUPPRESS if short_help else "use pymemembed beta-barrel potential")
+embedopt.add_argument("--pymemembed-threads", type=int, default=4,    help=argparse.SUPPRESS if short_help else "pymemembed parallel threads for GA-based searches")
+embedopt.add_argument("--pymemembed-search", "--mem_opt", type=int, default=0, choices=[0,1,2,3], help=argparse.SUPPRESS if short_help else "pymemembed search mode (compatible with upstream --mem_opt): 0=GA, 1=grid, 2=direct, 3=multi-GA")
+embedopt.add_argument("--pymemembed-barrel", "--barrel", action="store_true",     help=argparse.SUPPRESS if short_help else "use pymemembed beta-barrel potential (compatible with upstream --barrel)")
 embedopt.add_argument("--pymemembed-force-span", action="store_true", help=argparse.SUPPRESS if short_help else "enforce a membrane-spanning orientation in pymemembed")
 embedopt.add_argument("--pymemembed-chains", type=str,                help=argparse.SUPPRESS if short_help else "comma-separated chain list to pass to pymemembed")
 embedopt.add_argument("--pymemembed-polar-headgroups", action="store_true", help=argparse.SUPPRESS if short_help else "retain ±24 A polar headgroup markers in pymemembed raw working output")
@@ -220,6 +263,7 @@ packmolopt.add_argument("--packlog",type=str,default="packmol",       help=argpa
 packmolopt.add_argument("--packmol",type=str,                         help=argparse.SUPPRESS)
 packmolopt.add_argument("--hexadecimal_indices", action="store_true", default=True, help=argparse.SUPPRESS if short_help else "use PACKMOL hexadecimal_indices output; will be converted to hybrid-36 in final PDB")
 packmolopt.add_argument("--no-hexadecimal-indices", action="store_false", dest="hexadecimal_indices", help=argparse.SUPPRESS if short_help else "disable PACKMOL hexadecimal_indices output")
+packmolopt.add_argument("--packmol-no-water", action="store_true",   help=argparse.SUPPRESS if short_help else "skip solvent and ion placement in the generated PACKMOL script, but still compute and report solvent/ion counts for each original packing partition")
 
 saltopt = parser.add_argument_group('Salts and charges')
 saltopt.add_argument("--salt",        action="store_true",         help=argparse.SUPPRESS if short_help else "adds salt at a concentration of 0.15M by default. Salt is always added considering estimated charges for the system.")
@@ -252,6 +296,8 @@ class PACKMOLMemgen(object):
         self.outdir = os.path.abspath(getattr(self, "outdir", ".") or ".")
         self._used_tools = {"packmol-memgen"}
         self.martini_build_output = None
+        self.packing_counts_report = None
+        self.packing_counts_path = None
 
     def _out_path(self, *parts):
         return os.path.join(self.outdir, *parts)
@@ -261,6 +307,82 @@ class PACKMOLMemgen(object):
             return f"\"{path}\""
         return path
 
+    def _packing_counts_report_path(self):
+        if self.packing_counts_path is None:
+            self.packing_counts_path = str(Path(self.outfile).with_suffix(".packing_counts.json"))
+        return self.packing_counts_path
+
+    def _init_packing_counts_report(self):
+        if not self.packmol_no_water:
+            self.packing_counts_report = None
+            return
+        self.packing_counts_report = {
+            "mode": "packmol_no_water",
+            "output": self.outfile,
+            "solvent_recipe": {
+                "solvents": self.solvents,
+                "solvent_ratio": self.solvent_ratio,
+            },
+            "salt_recipe": {
+                "salt": bool(self.salt),
+                "saltcon": float(self.saltcon),
+                "salt_c": self.salt_c,
+                "salt_a": self.salt_a,
+                "nocounter": bool(self.nocounter),
+                "charge_imbalance": int(self.charge_imbalance),
+            },
+            "partitions": [],
+            "totals": {
+                "water_count": 0,
+                "cation_count": 0,
+                "anion_count": 0,
+            },
+        }
+
+    def _record_packing_partition(
+        self,
+        *,
+        bilayer_index,
+        region_role,
+        z_range,
+        volume_a3,
+        water_count,
+        cation_count,
+        anion_count,
+        salt_pairs,
+        net_charge_target,
+        solvent_counts=None,
+    ):
+        if not self.packing_counts_report:
+            return
+        partition = {
+            "id": f"bilayer_{bilayer_index}_{region_role}",
+            "bilayer_index": bilayer_index,
+            "region_role": region_role,
+            "z_range": [round(float(z_range[0]), 3), round(float(z_range[1]), 3)],
+            "volume_a3": round(float(volume_a3), 3),
+            "water_count": int(water_count),
+            "cation_count": int(cation_count),
+            "anion_count": int(anion_count),
+            "salt_pairs": int(salt_pairs),
+            "net_charge_target": int(net_charge_target),
+        }
+        if solvent_counts:
+            partition["solvent_counts"] = {name: int(count) for name, count in solvent_counts.items()}
+        self.packing_counts_report["partitions"].append(partition)
+        self.packing_counts_report["totals"]["water_count"] += int(water_count)
+        self.packing_counts_report["totals"]["cation_count"] += int(cation_count)
+        self.packing_counts_report["totals"]["anion_count"] += int(anion_count)
+
+    def _write_packing_counts_report(self):
+        if not self.packing_counts_report:
+            return
+        report_path = self._packing_counts_report_path()
+        with open(report_path, "w") as handle:
+            json.dump(self.packing_counts_report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        logger.info("Dry packing counts written to %s", report_path)
+
     def _orientation_label(self, n_ter):
         label = n_ter or ""
         if label and not label.startswith("_"):
@@ -269,6 +391,9 @@ class PACKMOLMemgen(object):
 
     def _has_nondefault_cli_value(self, dest):
         return getattr(self, dest, None) != parser.get_default(dest)
+
+    def _mempro_extension_requested(self):
+        return self.martini or any(self._has_nondefault_cli_value(dest) for dest in MEMPRO_ONLY_FLAGS)
 
     def _normalize_orientation_backend(self):
         backend = getattr(self, "orientation_backend", parser.get_default("orientation_backend"))
@@ -282,35 +407,22 @@ class PACKMOLMemgen(object):
             exit()
         if self.preoriented and not explicit:
             backend = "preoriented"
+        elif self._mempro_extension_requested() and not explicit:
+            backend = "mempro"
+        elif self.martini and explicit and backend != "mempro":
+            logger.critical(
+                "CRITICAL:\n  --martini requires --orientation-backend mempro. "
+                "Remove the explicit backend selection or use --orientation-backend mempro."
+            )
+            exit()
         self.orientation_backend = backend
         if backend == "preoriented":
             self.preoriented = True
 
     def _validate_orientation_backend_options(self):
         backend = self.orientation_backend
-        mempro_only = {
-            "mempro": "--mempro",
-            "mempro_grid": "--mempro_grid",
-            "mempro_iters": "--mempro_iters",
-            "mempro_rank": "--mempro_rank",
-            "mempro_args": "--mempro_args",
-            "mempro_curvature": "--mempro_curvature",
-            "build_system": "--insane_build_ranks",
-            "build_arguments": "--insane_args",
-        }
-        pymemembed_only = {
-            "pymemembed_threads": "--pymemembed-threads",
-            "pymemembed_search": "--pymemembed-search",
-            "pymemembed_barrel": "--pymemembed-barrel",
-            "pymemembed_force_span": "--pymemembed-force-span",
-            "pymemembed_chains": "--pymemembed-chains",
-            "pymemembed_polar_headgroups": "--pymemembed-polar-headgroups",
-            "pymemembed_max_calls": "--pymemembed-max-calls",
-            "pymemembed_runs": "--pymemembed-runs",
-        }
-
         if backend != "mempro":
-            invalid = [flag for dest, flag in mempro_only.items() if self._has_nondefault_cli_value(dest)]
+            invalid = [flag for dest, flag in MEMPRO_ONLY_FLAGS.items() if self._has_nondefault_cli_value(dest)]
             if invalid:
                 logger.critical(
                     "CRITICAL:\n  %s only valid with --orientation-backend mempro.",
@@ -318,21 +430,16 @@ class PACKMOLMemgen(object):
                 )
                 exit()
         if backend != "pymemembed":
-            invalid = [flag for dest, flag in pymemembed_only.items() if self._has_nondefault_cli_value(dest)]
+            invalid = [flag for dest, flag in PYMEMEMBED_ONLY_FLAGS.items() if self._has_nondefault_cli_value(dest)]
             if invalid:
                 logger.critical(
                     "CRITICAL:\n  %s only valid with --orientation-backend pymemembed.",
                     ", ".join(invalid),
                 )
                 exit()
-        if backend == "pymemembed" and self.martini and self.build_system is not None:
+        if backend == "pymemembed" and self.martini:
             logger.critical(
-                "CRITICAL:\n  --insane_build_ranks is only supported with --orientation-backend mempro."
-            )
-            exit()
-        if backend == "pymemembed" and self.build_arguments:
-            logger.critical(
-                "CRITICAL:\n  --insane_args is only supported with --orientation-backend mempro."
+                "CRITICAL:\n  --martini is only supported with --orientation-backend mempro."
             )
             exit()
         if backend == "pymemembed" and self.pymemembed_threads < 1:
@@ -367,7 +474,7 @@ class PACKMOLMemgen(object):
                 if exc.name == "numba":
                     logger.critical(
                         "CRITICAL:\n  pymemembed requires numba. "
-                        "Install it with: pip install packmol-memgen-minimal[pymemembed]"
+                        "Install it with: pip install packmol-memgen-minimal"
                     )
                     exit()
                 if exc.name not in {module_name, module_name.split(".")[0]}:
@@ -377,52 +484,65 @@ class PACKMOLMemgen(object):
         logger.critical("CRITICAL:\n  pymemembed backend could not be imported from the packaged sources.")
         exit()
 
-    def _pymemembed_method(self):
-        return {0: "ga", 1: "grid", 2: "direct", 3: "ga_multi"}[self.pymemembed_search]
-
     def _pymemembed_chains_list(self):
         if not self.pymemembed_chains:
             return None
         return [chain.strip() for chain in self.pymemembed_chains.split(",") if chain.strip()]
 
-    def _run_pymemembed_orientation(self, pymemembed, pymemembed_wrapper, pdb, output_file, n_ter, verbose=False, polar_headgroups=None):
-        method = self._pymemembed_method()
-        chains = self._pymemembed_chains_list()
+    def _build_pymemembed_config(self, n_ter, polar_headgroups=None):
         if polar_headgroups is None:
             polar_headgroups = self.pymemembed_polar_headgroups
+        search_mode = self.pymemembed_search
+        method = {0: "ga", 1: "grid", 2: "direct", 3: "ga_multi"}[search_mode]
+        chains = self._pymemembed_chains_list()
+        return PymemembedCallConfig(
+            search_mode=search_mode,
+            method=method,
+            n_ter=n_ter,
+            beta_barrel=self.pymemembed_barrel,
+            force_span=self.pymemembed_force_span,
+            chains=tuple(chains) if chains is not None else None,
+            threads=self.pymemembed_threads,
+            max_calls=self.pymemembed_max_calls,
+            n_runs=self.pymemembed_runs,
+            polar_headgroups=polar_headgroups,
+        )
+
+    def _run_pymemembed_orientation(self, pymemembed, pymemembed_wrapper, pdb, output_file, n_ter, verbose=False, polar_headgroups=None):
+        config = self._build_pymemembed_config(n_ter=n_ter, polar_headgroups=polar_headgroups)
         if verbose:
             logger.info(
                 "Running pymemembed: method=%s threads=%s span=%s barrel=%s",
-                method,
-                self.pymemembed_threads,
-                self.pymemembed_force_span,
-                self.pymemembed_barrel,
+                config.method,
+                config.threads,
+                config.force_span,
+                config.beta_barrel,
             )
-        if method == "ga_multi":
+        if config.method == "ga_multi":
             return pymemembed_wrapper.run_ga_multi(
                 pdb_file=pdb,
                 output_file=output_file,
-                beta_barrel=self.pymemembed_barrel,
-                threads=self.pymemembed_threads,
-                n_runs=self.pymemembed_runs,
-                max_calls_per_run=self.pymemembed_max_calls,
-                n_ter=n_ter,
-                force_span=self.pymemembed_force_span,
-                chains=chains,
+                beta_barrel=config.beta_barrel,
+                threads=config.threads,
+                n_runs=config.n_runs,
+                max_calls_per_run=config.max_calls,
+                n_ter=config.n_ter,
+                force_span=config.force_span,
+                chains=list(config.chains) if config.chains is not None else None,
                 verbose=verbose,
             )
         return pymemembed.memembed_align(
             pdb_file=pdb,
             output_file=output_file,
-            method=method,
-            threads=self.pymemembed_threads,
-            max_calls=self.pymemembed_max_calls,
-            beta_barrel=self.pymemembed_barrel,
-            force_span=self.pymemembed_force_span,
-            chains=chains,
-            n_ter=n_ter,
+            method=config.method,
+            threads=config.threads,
+            max_calls=config.max_calls,
+            beta_barrel=config.beta_barrel,
+            force_span=config.force_span,
+            chains=list(config.chains) if config.chains is not None else None,
+            n_ter=config.n_ter,
             verbose=verbose,
-            polar_headgroups=polar_headgroups,
+            polar_headgroups=config.polar_headgroups,
         )
 
     def _parse_pymemembed_membrane_markers(self, pdb_path):
@@ -996,7 +1116,7 @@ class PACKMOLMemgen(object):
                     "Install it with: pip install packmol-memgen-minimal[mempro]"
                 )
                 logger.warning("\n"+len(miss)*"#"+"\n"+miss+"\n"+len(miss)*"#"+"\n")
-        elif self.orientation_backend == "pymemembed" and not self.onlymembrane:
+        elif self.orientation_backend == "pymemembed" and not self.onlymembrane and not self.preoriented:
             self._require_pymemembed_module()
             
         # logger.info(self.mempro if self.mempro else "MemPrO not used")
@@ -1025,6 +1145,7 @@ class PACKMOLMemgen(object):
                 self.prot_rad = 2
             if "--tolerance" not in sys.argv:
                 self.tolerance = 3
+        self._init_packing_counts_report()
     
         martini_skip_solvent_params = False
         for solvent in self.solvents.split(":"):
@@ -1869,20 +1990,21 @@ class PACKMOLMemgen(object):
     
                 ######################## WATER && SOLUTE #####################################
     
-                for solvent in self.solvents.split(":"):
-                    solvent_pdb = solvent + ".pdb"
-                    solvent_path = self._out_path(solvent_pdb)
-                    if os.path.isfile(solvent_path):
-                        logger.info("Using " + solvent_path + " in the folder")
-                    else:
-                        try:
-                            shutil.copy(os.path.join(script_path, rep, "pdbs", solvent_pdb), solvent_path)
-                        except:
-                            pdbtar.extract(solvent_pdb, path=self.outdir)
-                        self.created_notrun.append(solvent_path)
-                    if not os.path.isfile(solvent_path):
-                        logger.critical("CRITICAL:" + solvent_path + " is not to found in the folder!")
-                        exit()
+                if not self.packmol_no_water:
+                    for solvent in self.solvents.split(":"):
+                        solvent_pdb = solvent + ".pdb"
+                        solvent_path = self._out_path(solvent_pdb)
+                        if os.path.isfile(solvent_path):
+                            logger.info("Using " + solvent_path + " in the folder")
+                        else:
+                            try:
+                                shutil.copy(os.path.join(script_path, rep, "pdbs", solvent_pdb), solvent_path)
+                            except:
+                                pdbtar.extract(solvent_pdb, path=self.outdir)
+                            self.created_notrun.append(solvent_path)
+                        if not os.path.isfile(solvent_path):
+                            logger.critical("CRITICAL:" + solvent_path + " is not to found in the folder!")
+                            exit()
     
                 if self.curvature is not None:
                     solvent_vol_up           = sphere_integral_square(X_min,X_max,Y_min,Y_max,r1=sphere_radius+z_offset+leaflet_z,z_max=Z_dim[bilayer][1]+z_offset,c=-sphere_radius)-solvol[bilayer][1]
@@ -2011,11 +2133,16 @@ class PACKMOLMemgen(object):
                 if charge > 0:
                     neg_up = int(round(charge*(solvent_vol_up/(solvent_vol_tot))))
                     neg_down = int(round(charge*(solvent_vol_down/(solvent_vol_tot))))
+                    charge_target_up = neg_up
+                    charge_target_down = neg_down
                 else:
                     pos_up = int(round((abs(charge)/self.ion_dict[self.salt_c][1])*(solvent_vol_up/(solvent_vol_tot))))
                     pos_down = int(round((abs(charge)/self.ion_dict[self.salt_c][1])*(solvent_vol_down/(solvent_vol_tot))))
+                    charge_target_up = -pos_up * self.ion_dict[self.salt_c][1]
+                    charge_target_down = -pos_down * self.ion_dict[self.salt_c][1]
                 con_pos = (pos_up+pos_down)/((solvent_vol_tot)*avogadro/(1*10**27))
                 con_neg = (neg_up+neg_down)/((solvent_vol_tot)*avogadro/(1*10**27))
+                saltnum_up = saltnum_down = 0
                 if self.salt:
                     if con_pos > saltcon or con_neg > saltcon*self.ion_dict[self.salt_c][1]:
                 #        print pos_up, pos_down, neg_up, neg_down, saltnum_up, saltnum_down
@@ -2078,115 +2205,124 @@ class PACKMOLMemgen(object):
                 #    new_con_neg = (neg_up+neg_down)/(((solvent_vol_tot)*avogadro/(1*10**27)))
                 #    new_con_pos = (pos_up+pos_down)/(((solvent_vol_tot)*avogadro/(1*10**27)))
     
-                cation_path = self._out_path(cation + ".pdb")
-                anion_path = self._out_path(anion + ".pdb")
-                try:
-                    shutil.copy(os.path.join(script_path, rep, "pdbs", cation + ".pdb"), cation_path)
-                except:
-                    pdbtar.extract(cation + ".pdb", path=self.outdir)
-                self.created_notrun.append(cation_path)
-                try:
-                    shutil.copy(os.path.join(script_path, rep, "pdbs", anion + ".pdb"), anion_path)
-                except:
-                    pdbtar.extract(anion + ".pdb", path=self.outdir)
-                self.created_notrun.append(anion_path)
-                if not self.solvate and not self.self_assembly:
-                    if pos_down > 0:
-                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(pos_down))+"\n"
-                        if self.curvature is not None:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  inside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius-leaflet_z+z_offset)+"\n"
-                        elif self.xygauss:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  below xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(-leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
-                        else:
-                            if self.pbc:
-                                content_ion += "  below plane 0. 0. 1. "+str(-leaflet_z+z_offset)+"\n" 
-                                if bilayer > 0:
-                                    content_ion += "  above plane 0. 0. 1. "+str(round(Z_dim[bilayer][0]+z_offset,2))+"\n"
+                if self.nocounter:
+                    logger.info("Ions will not be added. System charge will be handled downstream.")
+                    pos_up = pos_down = 0
+                    neg_up = neg_down = 0
+                    saltnum_up = saltnum_down = 0
+                    content_ion = ""
+                elif not self.packmol_no_water:
+                    cation_path = self._out_path(cation + ".pdb")
+                    anion_path = self._out_path(anion + ".pdb")
+                    try:
+                        shutil.copy(os.path.join(script_path, rep, "pdbs", cation + ".pdb"), cation_path)
+                    except:
+                        pdbtar.extract(cation + ".pdb", path=self.outdir)
+                    self.created_notrun.append(cation_path)
+                    try:
+                        shutil.copy(os.path.join(script_path, rep, "pdbs", anion + ".pdb"), anion_path)
+                    except:
+                        pdbtar.extract(anion + ".pdb", path=self.outdir)
+                    self.created_notrun.append(anion_path)
+                    if not self.solvate and not self.self_assembly:
+                        if pos_down > 0:
+                            content_ion += "structure " + self._packmol_path(cation_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(pos_down))+"\n"
+                            if self.curvature is not None:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  inside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius-leaflet_z+z_offset)+"\n"
+                            elif self.xygauss:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  below xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(-leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
                             else:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
-                        content_ion += "end structure\n\n"
-                    if pos_up > 0:
-                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(pos_up))+"\n"
-                        if self.curvature is not None:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  outside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius+leaflet_z+z_offset)+"\n"
-                        elif self.xygauss:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  over xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
-                        else:
-                            if self.pbc:
-                                content_ion += "  above plane 0. 0. 1. "+str(leaflet_z+z_offset)+"\n"
-                                if bilayer+1 < len(composition):
-                                    content_ion += "  below plane 0. 0. 1. "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                                if self.pbc:
+                                    content_ion += "  below plane 0. 0. 1. "+str(-leaflet_z+z_offset)+"\n" 
+                                    if bilayer > 0:
+                                        content_ion += "  above plane 0. 0. 1. "+str(round(Z_dim[bilayer][0]+z_offset,2))+"\n"
+                                else:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
+                            content_ion += "end structure\n\n"
+                        if pos_up > 0:
+                            content_ion += "structure " + self._packmol_path(cation_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(pos_up))+"\n"
+                            if self.curvature is not None:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  outside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius+leaflet_z+z_offset)+"\n"
+                            elif self.xygauss:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  over xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
                             else:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(leaflet_z+z_offset)+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
-                        content_ion += "end structure\n\n"
-                    if neg_down > 0:
-                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(neg_down))+"\n"
-                        if self.curvature is not None:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  inside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius-leaflet_z+z_offset)+"\n"
-                        elif self.xygauss:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  below xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(-leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
-                        else:
-                            if self.pbc:
-                                content_ion += "  below plane 0. 0. 1. "+str(-leaflet_z+z_offset)+"\n"
-                                if bilayer > 0:
-                                    content_ion += "  above plane 0. 0. 1. "+str(round(Z_dim[bilayer][0]+z_offset,2))+"\n"
+                                if self.pbc:
+                                    content_ion += "  above plane 0. 0. 1. "+str(leaflet_z+z_offset)+"\n"
+                                    if bilayer+1 < len(composition):
+                                        content_ion += "  below plane 0. 0. 1. "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                                else:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(leaflet_z+z_offset)+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                            content_ion += "end structure\n\n"
+                        if neg_down > 0:
+                            content_ion += "structure " + self._packmol_path(anion_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(neg_down))+"\n"
+                            if self.curvature is not None:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  inside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius-leaflet_z+z_offset)+"\n"
+                            elif self.xygauss:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  below xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(-leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
                             else:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
-                        content_ion += "end structure\n\n"
-                    if neg_up > 0:
-                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(neg_up))+"\n"
-                        if self.curvature is not None:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  outside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius+leaflet_z+z_offset)+"\n"
-                        elif self.xygauss:
-                            if not self.pbc:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
-                            content_ion += "  over xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
-                        else:
-                            if self.pbc:
-                                content_ion += "  above plane 0. 0. 1. "+str(leaflet_z+z_offset)+"\n"
-                                if bilayer+1 < len(composition):
-                                    content_ion += "  below plane 0. 0. 1. "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                                if self.pbc:
+                                    content_ion += "  below plane 0. 0. 1. "+str(-leaflet_z+z_offset)+"\n"
+                                    if bilayer > 0:
+                                        content_ion += "  above plane 0. 0. 1. "+str(round(Z_dim[bilayer][0]+z_offset,2))+"\n"
+                                else:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(-leaflet_z+z_offset)+"\n"
+                            content_ion += "end structure\n\n"
+                        if neg_up > 0:
+                            content_ion += "structure " + self._packmol_path(anion_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(neg_up))+"\n"
+                            if self.curvature is not None:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  outside sphere 0. 0. "+str(-sphere_radius)+" "+str(sphere_radius+leaflet_z+z_offset)+"\n"
+                            elif self.xygauss:
+                                if not self.pbc:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(Z_dim[bilayer][1])+"\n"
+                                content_ion += "  over xygauss 0. 0. "+self.xygauss[0]+" "+self.xygauss[1]+" "+str(leaflet_z+z_offset)+" "+self.xygauss[2]+"\n"
                             else:
-                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(leaflet_z+z_offset)+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
-                        content_ion += "end structure\n\n"
-                else:
-                    if pos_down+pos_up > 0:
-                        content_ion += "structure " + self._packmol_path(cation_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(pos_down+pos_up))+"\n"
-                        if not self.pbc:
-                            content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
-                        content_ion += "end structure\n\n"
-                    if neg_down+neg_up > 0:
-                        content_ion += "structure " + self._packmol_path(anion_path) + "\n"
-                        content_ion += "  nloop "+str(self.nloop)+"\n"
-                        content_ion += "  number "+str(int(neg_down+neg_up))+"\n"
-                        if not self.pbc:
-                            content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
-                        content_ion += "end structure\n\n"
-    
+                                if self.pbc:
+                                    content_ion += "  above plane 0. 0. 1. "+str(leaflet_z+z_offset)+"\n"
+                                    if bilayer+1 < len(composition):
+                                        content_ion += "  below plane 0. 0. 1. "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                                else:
+                                    content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(leaflet_z+z_offset)+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                            content_ion += "end structure\n\n"
+                    else:
+                        if pos_down+pos_up > 0:
+                            content_ion += "structure " + self._packmol_path(cation_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(pos_down+pos_up))+"\n"
+                            if not self.pbc:
+                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                            content_ion += "end structure\n\n"
+                        if neg_down+neg_up > 0:
+                            content_ion += "structure " + self._packmol_path(anion_path) + "\n"
+                            content_ion += "  nloop "+str(self.nloop)+"\n"
+                            content_ion += "  number "+str(int(neg_down+neg_up))+"\n"
+                            if not self.pbc:
+                                content_ion += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
+                            content_ion += "end structure\n\n"
+
+                solvent_counts_down = {}
+                solvent_counts_up = {}
                 for i, solvent in enumerate(self.solvents.split(":")):
                     solvent_pdb = solvent + ".pdb"
                     solvent_path = self._out_path(solvent_pdb)
@@ -2202,6 +2338,8 @@ class PACKMOLMemgen(object):
                         * (avogadro/(1*10**24))
                         * (float(self.sparameters[solvent]["density"])/float(self.sparameters[solvent]["MW"]))
                     )
+                    solvent_counts_down[solvent] = solvents_down
+                    solvent_counts_up[solvent] = solvents_up
 
                     content_solvent_header = "structure " + self._packmol_path(solvent_path) + "\n"
                     if self.sirah:
@@ -2214,6 +2352,8 @@ class PACKMOLMemgen(object):
                         content_solvent_header += "  end atoms\n"
                     content_solvent_header += "  nloop "+str(self.nloop)+"\n"
 
+                    if self.packmol_no_water:
+                        continue
                     if not self.solvate and not self.self_assembly:
                         if solvents_down > 0:
                             content_solvent += content_solvent_header
@@ -2259,11 +2399,52 @@ class PACKMOLMemgen(object):
                         if not self.pbc:
                             content_solvent += "  inside box "+str(round(X_min,2))+" "+str(round(Y_min,2))+" "+str(round(Z_dim[bilayer][0]+z_offset,2))+" "+str(round(X_max,2))+" "+str(round(Y_max,2))+" "+str(round(Z_dim[bilayer][1]+z_offset,2))+"\n"
                         content_solvent += "end structure\n\n"
-    
-            if self.nocounter:
-                logger.info("Ions will not be added. System charge will be handled downstream.")
-                content_ion = ""
+
+                if self.packmol_no_water:
+                    if not self.solvate and not self.self_assembly:
+                        self._record_packing_partition(
+                            bilayer_index=bilayer,
+                            region_role="lower_partition",
+                            z_range=(Z_dim[bilayer][0] + z_offset, -leaflet_z + z_offset),
+                            volume_a3=solvent_vol_down,
+                            water_count=watnum_down,
+                            cation_count=pos_down,
+                            anion_count=neg_down,
+                            salt_pairs=saltnum_down,
+                            net_charge_target=charge_target_down,
+                            solvent_counts=solvent_counts_down,
+                        )
+                        self._record_packing_partition(
+                            bilayer_index=bilayer,
+                            region_role="upper_partition",
+                            z_range=(leaflet_z + z_offset, Z_dim[bilayer][1] + z_offset),
+                            volume_a3=solvent_vol_up,
+                            water_count=watnum_up,
+                            cation_count=pos_up,
+                            anion_count=neg_up,
+                            salt_pairs=saltnum_up,
+                            net_charge_target=charge_target_up,
+                            solvent_counts=solvent_counts_up,
+                        )
+                    else:
+                        combined_solvent_counts = {
+                            solvent: solvent_counts_down.get(solvent, 0) + solvent_counts_up.get(solvent, 0)
+                            for solvent in self.solvents.split(":")
+                        }
+                        self._record_packing_partition(
+                            bilayer_index=bilayer,
+                            region_role="combined_partition",
+                            z_range=(Z_dim[bilayer][0] + z_offset, Z_dim[bilayer][1] + z_offset),
+                            volume_a3=solvent_vol_tot,
+                            water_count=watnum_down + watnum_up,
+                            cation_count=pos_down + pos_up,
+                            anion_count=neg_down + neg_up,
+                            salt_pairs=saltnum_down + saltnum_up,
+                            net_charge_target=charge_target_down + charge_target_up,
+                            solvent_counts=combined_solvent_counts,
+                        )
             self.contents = content_header+content_prot+content_lipid+content_solvent+content_ion+content_solute
+            self._write_packing_counts_report()
 
             if not self.solvate:
                 box_data = """

@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
+  "numba",
   "pandas",
   "scipy",
   "tqdm",
@@ -33,9 +34,8 @@ dynamic = ["version"]
 [project.optional-dependencies]
 packmol = ["packmol==21.1.14"]
 mempro = ["mempro"]
-pymemembed = ["numba"]
-martini = ["mdtraj", "vermouth"]
-full = ["packmol==21.1.4", "mempro", "numba", "vermouth", "mdtraj"]
+martini = ["mempro", "mdtraj", "vermouth"]
+full = ["packmol==21.1.14", "mempro", "vermouth", "mdtraj"]
 
 [project.urls]
 Homepage = "https://github.com/xiaoxuan-yu/packmol_memgen_minimal/"
