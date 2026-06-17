@@ -312,6 +312,44 @@ class PACKMOLMemgen(object):
             self.packing_counts_path = str(Path(self.outfile).with_suffix(".packing_counts.json"))
         return self.packing_counts_path
 
+    def _report_float(self, value, digits=3):
+        return round(float(value), digits)
+
+    def _report_range(self, lower, upper, digits=3):
+        return [self._report_float(lower, digits), self._report_float(upper, digits)]
+
+    def _packmol_constraint_inside_box(self, x_range, y_range, z_range):
+        return {
+            "type": "inside_box",
+            "x_range": self._report_range(*x_range),
+            "y_range": self._report_range(*y_range),
+            "z_range": self._report_range(*z_range),
+        }
+
+    def _packmol_constraint_plane(self, relation, offset):
+        return {
+            "type": relation,
+            "normal": [0.0, 0.0, 1.0],
+            "offset": self._report_float(offset),
+        }
+
+    def _packmol_constraint_sphere(self, relation, center, radius):
+        return {
+            "type": relation,
+            "center": [self._report_float(coord) for coord in center],
+            "radius": self._report_float(radius),
+        }
+
+    def _packmol_constraint_xygauss(self, relation, center, sigma_x, sigma_y, z_offset, height):
+        return {
+            "type": relation,
+            "center": [self._report_float(coord) for coord in center],
+            "sigma_x": self._report_float(sigma_x),
+            "sigma_y": self._report_float(sigma_y),
+            "z_offset": self._report_float(z_offset),
+            "height": self._report_float(height),
+        }
+
     def _init_packing_counts_report(self):
         if not self.packmol_no_water:
             self.packing_counts_report = None
@@ -319,6 +357,7 @@ class PACKMOLMemgen(object):
         self.packing_counts_report = {
             "mode": "packmol_no_water",
             "output": self.outfile,
+            "geometry": {},
             "solvent_recipe": {
                 "solvents": self.solvents,
                 "solvent_ratio": self.solvent_ratio,
@@ -339,6 +378,131 @@ class PACKMOLMemgen(object):
             },
         }
 
+    def _set_packing_counts_geometry(
+        self,
+        *,
+        x_range,
+        y_range,
+        z_range,
+        bilayer_count,
+        leaflet_z,
+        sphere_radius=None,
+    ):
+        if not self.packing_counts_report:
+            return
+        membrane_shape = "flat"
+        if self.curvature is not None:
+            membrane_shape = "sphere"
+        elif self.xygauss:
+            membrane_shape = "xygauss"
+        geometry = {
+            "membrane_shape": membrane_shape,
+            "pbc": bool(self.pbc),
+            "bilayer_count": int(bilayer_count),
+            "box": {
+                "x_range": self._report_range(*x_range),
+                "y_range": self._report_range(*y_range),
+                "z_range": self._report_range(*z_range),
+            },
+            "leaflet_thickness": self._report_float(leaflet_z),
+        }
+        if self.curvature is not None and sphere_radius is not None:
+            geometry["curvature"] = float(self.curvature)
+            geometry["sphere_radius"] = self._report_float(sphere_radius)
+            geometry["sphere_center"] = [0.0, 0.0, self._report_float(-sphere_radius)]
+        elif self.xygauss:
+            geometry["xygauss"] = {
+                "center": [0.0, 0.0],
+                "sigma_x": self._report_float(self.xygauss[0]),
+                "sigma_y": self._report_float(self.xygauss[1]),
+                "height": self._report_float(self.xygauss[2]),
+            }
+        self.packing_counts_report["geometry"] = geometry
+
+    def _packing_partition_constraints(
+        self,
+        *,
+        bilayer_index,
+        bilayer_count,
+        region_role,
+        x_range,
+        y_range,
+        box_z_range,
+        z_offset,
+        leaflet_z,
+        sphere_radius=None,
+    ):
+        constraints = []
+        if not self.packing_counts_report:
+            return constraints
+
+        if not self.solvate and not self.self_assembly:
+            if self.curvature is not None and sphere_radius is not None:
+                constraints.append(self._packmol_constraint_inside_box(x_range, y_range, box_z_range))
+                center = (0.0, 0.0, -sphere_radius)
+                if region_role == "lower_partition":
+                    constraints.append(
+                        self._packmol_constraint_sphere(
+                            "inside_sphere", center, sphere_radius - leaflet_z + z_offset
+                        )
+                    )
+                elif region_role == "upper_partition":
+                    constraints.append(
+                        self._packmol_constraint_sphere(
+                            "outside_sphere", center, sphere_radius + leaflet_z + z_offset
+                        )
+                    )
+            elif self.xygauss:
+                constraints.append(self._packmol_constraint_inside_box(x_range, y_range, box_z_range))
+                if region_role == "lower_partition":
+                    constraints.append(
+                        self._packmol_constraint_xygauss(
+                            "below_xygauss",
+                            (0.0, 0.0),
+                            self.xygauss[0],
+                            self.xygauss[1],
+                            -leaflet_z + z_offset,
+                            self.xygauss[2],
+                        )
+                    )
+                elif region_role == "upper_partition":
+                    constraints.append(
+                        self._packmol_constraint_xygauss(
+                            "over_xygauss",
+                            (0.0, 0.0),
+                            self.xygauss[0],
+                            self.xygauss[1],
+                            leaflet_z + z_offset,
+                            self.xygauss[2],
+                        )
+                    )
+            elif self.pbc:
+                if region_role == "lower_partition":
+                    constraints.append(self._packmol_constraint_plane("below_plane", -leaflet_z + z_offset))
+                    if bilayer_index > 0:
+                        constraints.append(self._packmol_constraint_plane("above_plane", box_z_range[0]))
+                elif region_role == "upper_partition":
+                    constraints.append(self._packmol_constraint_plane("above_plane", leaflet_z + z_offset))
+                    if bilayer_index + 1 < bilayer_count:
+                        constraints.append(self._packmol_constraint_plane("below_plane", box_z_range[1]))
+            else:
+                if region_role == "lower_partition":
+                    constraints.append(
+                        self._packmol_constraint_inside_box(
+                            x_range, y_range, (box_z_range[0], -leaflet_z + z_offset)
+                        )
+                    )
+                elif region_role == "upper_partition":
+                    constraints.append(
+                        self._packmol_constraint_inside_box(
+                            x_range, y_range, (leaflet_z + z_offset, box_z_range[1])
+                        )
+                    )
+        elif not self.pbc:
+            constraints.append(self._packmol_constraint_inside_box(x_range, y_range, box_z_range))
+
+        return constraints
+
     def _record_packing_partition(
         self,
         *,
@@ -352,6 +516,7 @@ class PACKMOLMemgen(object):
         salt_pairs,
         net_charge_target,
         solvent_counts=None,
+        packmol_constraints=None,
     ):
         if not self.packing_counts_report:
             return
@@ -369,6 +534,8 @@ class PACKMOLMemgen(object):
         }
         if solvent_counts:
             partition["solvent_counts"] = {name: int(count) for name, count in solvent_counts.items()}
+        if packmol_constraints is not None:
+            partition["packmol_constraints"] = packmol_constraints
         self.packing_counts_report["partitions"].append(partition)
         self.packing_counts_report["totals"]["water_count"] += int(water_count)
         self.packing_counts_report["totals"]["cation_count"] += int(cation_count)
@@ -1753,6 +1920,14 @@ class PACKMOLMemgen(object):
         sphere_radius = None
         if self.curvature is not None:
             sphere_radius = 1 / self.curvature
+        self._set_packing_counts_geometry(
+            x_range=(X_min, X_max),
+            y_range=(Y_min, Y_max),
+            z_range=(Z_dim[0][0], Z_dim[0][0] + sum([zdim[2] for zdim in Z_dim])),
+            bilayer_count=len(composition),
+            leaflet_z=leaflet_z,
+            sphere_radius=sphere_radius,
+        )
 
         if os.path.exists(self.outfile) and not self.overwrite:
             logger.info("Packed PDB "+self.outfile+" found. Skipping PACKMOL")
@@ -2401,6 +2576,7 @@ class PACKMOLMemgen(object):
                         content_solvent += "end structure\n\n"
 
                 if self.packmol_no_water:
+                    partition_box_z_range = (Z_dim[bilayer][0] + z_offset, Z_dim[bilayer][1] + z_offset)
                     if not self.solvate and not self.self_assembly:
                         self._record_packing_partition(
                             bilayer_index=bilayer,
@@ -2413,6 +2589,17 @@ class PACKMOLMemgen(object):
                             salt_pairs=saltnum_down,
                             net_charge_target=charge_target_down,
                             solvent_counts=solvent_counts_down,
+                            packmol_constraints=self._packing_partition_constraints(
+                                bilayer_index=bilayer,
+                                bilayer_count=len(composition),
+                                region_role="lower_partition",
+                                x_range=(X_min, X_max),
+                                y_range=(Y_min, Y_max),
+                                box_z_range=partition_box_z_range,
+                                z_offset=z_offset,
+                                leaflet_z=leaflet_z,
+                                sphere_radius=sphere_radius,
+                            ),
                         )
                         self._record_packing_partition(
                             bilayer_index=bilayer,
@@ -2425,6 +2612,17 @@ class PACKMOLMemgen(object):
                             salt_pairs=saltnum_up,
                             net_charge_target=charge_target_up,
                             solvent_counts=solvent_counts_up,
+                            packmol_constraints=self._packing_partition_constraints(
+                                bilayer_index=bilayer,
+                                bilayer_count=len(composition),
+                                region_role="upper_partition",
+                                x_range=(X_min, X_max),
+                                y_range=(Y_min, Y_max),
+                                box_z_range=partition_box_z_range,
+                                z_offset=z_offset,
+                                leaflet_z=leaflet_z,
+                                sphere_radius=sphere_radius,
+                            ),
                         )
                     else:
                         combined_solvent_counts = {
@@ -2442,6 +2640,17 @@ class PACKMOLMemgen(object):
                             salt_pairs=saltnum_down + saltnum_up,
                             net_charge_target=charge_target_down + charge_target_up,
                             solvent_counts=combined_solvent_counts,
+                            packmol_constraints=self._packing_partition_constraints(
+                                bilayer_index=bilayer,
+                                bilayer_count=len(composition),
+                                region_role="combined_partition",
+                                x_range=(X_min, X_max),
+                                y_range=(Y_min, Y_max),
+                                box_z_range=partition_box_z_range,
+                                z_offset=z_offset,
+                                leaflet_z=leaflet_z,
+                                sphere_radius=sphere_radius,
+                            ),
                         )
             self.contents = content_header+content_prot+content_lipid+content_solvent+content_ion+content_solute
             self._write_packing_counts_report()

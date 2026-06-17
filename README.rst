@@ -140,8 +140,10 @@ PACKMOL dry mode:
 - ``--packmol-no-water`` skips solvent and ion placement in the generated
   PACKMOL input while still computing and writing a
   ``<output>.packing_counts.json`` report with per-partition solvent and ion
-  counts. This is intended for avoiding PACKMOL water overhead while preserving
-  the original partition-based accounting for multi-bilayer systems.
+  counts, box/curvature geometry, and the corresponding would-be PACKMOL
+  solvent-placement constraints. This is intended for avoiding PACKMOL water
+  overhead while preserving the original partition-based accounting for
+  multi-bilayer systems.
 
 
 ############

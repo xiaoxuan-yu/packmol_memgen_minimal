@@ -739,3 +739,66 @@ def test_packmol_no_water_reports_multiple_bilayer_partitions(tmp_path: Path):
         "bilayer_1_lower_partition",
         "bilayer_1_upper_partition",
     ]
+
+
+def test_packmol_no_water_curved_report_includes_geometry_and_packmol_constraints(tmp_path: Path):
+    pmg = build_pmg(
+        [
+            "--notrun",
+            "--packmol-no-water",
+            "--distxy_fix",
+            "60",
+            "--curv_radius",
+            "120",
+            "--lipids",
+            "DOPC",
+            "--salt",
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    pmg.prepare()
+
+    report = json.loads(Path(pmg.packing_counts_path).read_text())
+    geometry = report["geometry"]
+    assert geometry["membrane_shape"] == "sphere"
+    assert geometry["pbc"] is False
+    assert geometry["bilayer_count"] == 1
+    assert geometry["box"] == {
+        "x_range": [-30.0, 30.0],
+        "y_range": [-30.0, 30.0],
+        "z_range": [-40.5, 40.5],
+    }
+    assert geometry["leaflet_thickness"] == pytest.approx(23.0)
+    assert geometry["curvature"] == pytest.approx(1 / 120.0)
+    assert geometry["sphere_radius"] == pytest.approx(120.0)
+    assert geometry["sphere_center"] == [0.0, 0.0, -120.0]
+
+    lower, upper = report["partitions"]
+    assert lower["packmol_constraints"] == [
+        {
+            "type": "inside_box",
+            "x_range": [-30.0, 30.0],
+            "y_range": [-30.0, 30.0],
+            "z_range": [-40.5, 40.5],
+        },
+        {
+            "type": "inside_sphere",
+            "center": [0.0, 0.0, -120.0],
+            "radius": 97.0,
+        },
+    ]
+    assert upper["packmol_constraints"] == [
+        {
+            "type": "inside_box",
+            "x_range": [-30.0, 30.0],
+            "y_range": [-30.0, 30.0],
+            "z_range": [-40.5, 40.5],
+        },
+        {
+            "type": "outside_sphere",
+            "center": [0.0, 0.0, -120.0],
+            "radius": 143.0,
+        },
+    ]
